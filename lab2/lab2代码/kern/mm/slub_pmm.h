@@ -17,5 +17,5 @@ struct kmem_cache {
     unsigned int ref_count;     // 引用计数器
 };
 
-void slub_check(void); // 声明 SLUB 测试函数
-#endif /* !__KERN_MM_SLUB_H__ */
+void slub_check(void); //SLUB 测试函数
+#endif
