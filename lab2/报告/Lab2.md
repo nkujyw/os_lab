@@ -302,8 +302,8 @@ const struct pmm_manager best_fit_pmm_manager = {
 
 **实现文件**
 
-	`kern/mm/buddy_pmm.c`
-	`kern/mm/buddy_pmm.h` 
+	kern/mm/buddy_pmm.c
+	kern/mm/buddy_pmm.h
 
 ---
 
@@ -558,8 +558,8 @@ static inline size_t ilog2_ceil(size_t n) {
 
 评分结果如下所示：
 
-![[Pasted image 20251018215836.png]]
 
+<img width="1576" height="386" alt="image" src="https://github.com/user-attachments/assets/fc008703-04b1-4c0e-95d5-824ecd96d3f2" />
 
 
 
