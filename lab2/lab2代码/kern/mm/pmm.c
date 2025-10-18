@@ -1,5 +1,6 @@
 #include <default_pmm.h>
 #include <best_fit_pmm.h>
+#include "slub_pmm.h"   
 #include <defs.h>
 #include <error.h>
 #include <memlayout.h>
@@ -81,7 +82,7 @@ static void page_init(void) {
     if (maxpa > KERNTOP) {
         maxpa = KERNTOP;
     }
-
+    
     extern char end[];
 
     npage = maxpa / PGSIZE;
@@ -111,6 +112,8 @@ void pmm_init(void) {
     satp_physical = PADDR(satp_virtual);
     cprintf("satp virtual address: 0xffffffffc0204000\n");
     cprintf("satp physical address: 0x0000000080204000\n");
+    // Run SLUB test
+    slub_check();
 }
 
 static void check_alloc_page(void) {

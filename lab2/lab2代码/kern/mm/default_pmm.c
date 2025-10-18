@@ -13,7 +13,7 @@ static free_area_t free_area;
 
 #define free_list (free_area.free_list)
 #define nr_free   (free_area.nr_free)
-
+void slub_check(void); // 声明 SLUB 测试函数
 static void
 default_init(void) {
     list_init(&free_list);
