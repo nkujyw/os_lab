@@ -298,7 +298,267 @@ const struct pmm_manager best_fit_pmm_manager = {
 >
 >- 参考[伙伴分配器的一个极简实现](http://coolshell.cn/articles/10427.html)， 在ucore中实现buddy system分配算法，要求有比较充分的测试用例说明实现的正确性，需要有设计文档。
 
+# Buddy System 物理页分配器设计文档
 
+**实现文件**
+
+	`kern/mm/buddy_pmm.c`
+	`kern/mm/buddy_pmm.h` 
+
+---
+
+## 1. 设计目标与背景
+
+uCore 的物理内存管理（PMM）框架通过 `struct pmm_manager` 提供统一接口，以支持多种分配策略，如 First-Fit、Best-Fit 等。Buddy System（伙伴系统）是一种结构清晰、效率较高的页级内存分配方式。
+
+它的基本思想是：将物理内存按页（4KiB）划分，并以 **2 的幂次方**大小管理内存块。`order = k` 表示块大小为 `2^k` 页。分配时，将请求页数向上取整到最近的 2 的幂，若无匹配块，则从更大块拆分；释放时，通过计算伙伴块位置，若伙伴空闲则合并为更大的块，持续进行直到无法再合并。
+
+这种方法的时间复杂度仅与最大阶数有关，通常为常数级。相比需要遍历链表的 First-Fit 或 Best-Fit，Buddy System 更高效、逻辑更简洁，也能在一定程度上减少外部碎片。
+
+---
+
+## 2. 外部接口（与 uCore 对接）
+
+通过 `buddy_pmm_manager` 接入 uCore：
+
+```c
+const struct pmm_manager buddy_pmm_manager = {
+    .name = "buddy_pmm_manager",
+    .init = buddy_init,
+    .init_memmap = buddy_init_memmap,
+    .alloc_pages = buddy_alloc_pages,
+    .free_pages = buddy_free_pages,
+    .nr_free_pages = buddy_nr_free_pages,
+    .check = buddy_check,
+};
+```
+
+> 集成：在 `kern/mm/pmm.c` 的 `init_pmm_manager()` 中设置 `pmm_manager = &buddy_pmm_manager;`。
+
+---
+
+## 3. 数据结构与关键状态
+
+### 3.1 分阶空闲链表
+
+```c
+typedef struct {
+    list_entry_t free_list;   // 该阶空闲块链表表头
+    unsigned int nr_blocks;   // 该阶空闲块数量（块数，不是页数）
+} buddy_area_t;
+
+static buddy_area_t buddy_area[MAX_BUDDY_ORDER + 1];
+```
+
+ 每个 `order` 对应一条空闲链表，链表元素是**空闲块的“头页”**。`nr_blocks` 用来快速统计该阶块数，便于计算总空闲页数。
+
+### 3.2 受管物理页区间（Arena）
+
+```c
+static struct Page *arena_base;   // 管理的连续页区间起始指针
+static size_t arena_npages;       // 管理的页数
+```
+
+`arena_base` 和 `arena_npages` 一起定义了当前分配器所管理的物理页范围。
+### 3.3 Page 元信息使用约定
+
+在伙伴系统中，每个空闲块由若干连续的页组成。为了方便识别，系统只在空闲块的头页中记录该块的元信息。
+
+具体约定如下：
+**空闲块头页（head page）**
+
+ - `SetPageProperty(head)`：设置 `PG_property` 标志位
+  - `head->property = order`：记录当前块的阶
+
+**块中的其他页**
+
+  - `PG_property` 清零
+  - `property = 0`
+
+这样设计有两个好处：
+
+1. **合并判断更可靠**：释放时，只需检查页是否为“头页”且阶数是否匹配，就能确定两块是否为同阶的伙伴块。
+
+2. **防止链表混乱**：避免错误地将块中间的某一页误认为新块的头页，从而破坏空闲链表结构或错误地进行合并。
+---
+
+## 4. 初始化流程
+
+### 4.1 `buddy_init()`
+
+```c++
+
+static void buddy_init(void) {
+    for (size_t i = 0; i <= MAX_BUDDY_ORDER; i++) {
+        list_init(&(buddy_area[i].free_list));
+        buddy_area[i].nr_blocks = 0;
+    }
+    arena_base = NULL;
+    arena_npages = 0;
+    buddy_inited = 1;
+}
+```
+该函数用于初始化整个伙伴系统的内部结构，此时尚未管理任何物理页，需通过 `buddy_init_memmap()` 导入可用内存区间。
+
+### 4.2 `buddy_init_memmap(base, n)`
+
+```c++
+static void buddy_init_memmap(struct Page *base, size_t n) {
+    arena_base = base;
+    arena_npages = n;
+    for (size_t i = 0; i < n; i++) {
+        struct Page *p = base + i;
+        assert(PageReserved(p));
+        ClearPageReserved(p);
+        ClearPageProperty(p);
+        p->property = 0;
+        set_page_ref(p, 0);
+    }
+    // 贪心切分：在位置 i 选尽可能大的 2^k，要求 i 按 2^k 对齐，且 2^k 不超过剩余
+    size_t i = 0;
+    while (i < n) {
+        size_t max_fit = 0, remain = n - i;
+        size_t align_lsb = i ? __builtin_ctzll(i) : MAX_BUDDY_ORDER;
+        (void)align_lsb;
+        for (size_t k = 0; k <= MAX_BUDDY_ORDER; k++) {
+            size_t sz = pages_of_order(k);
+            if (sz > remain) break;
+            if ((i & (sz - 1)) == 0) max_fit = k;
+        }
+        size_t k = max_fit;
+        while (pages_of_order(k) > remain) k--;
+        buddy_list_add(k, base + i);
+        i += pages_of_order(k);
+    }
+}
+```
+
+负责建立 `[base, base+n)` 区间的页管理结构。主要包括两步：
+1. 逐页清理,保证所有页从干净状态开始参与分配
+2. 贪心对齐切分,保证每个块都按 2 的幂对齐，也让后续的伙伴合并更容易成功
+
+---
+
+## 5. 分配算法
+
+### 5.1 `alloc_pages(n)` 的核心思路
+
+```c++
+static struct Page *buddy_alloc_pages(size_t n) {
+    if (n == 0) return NULL;
+    size_t need_order = ilog2_ceil(n);
+    if (need_order > MAX_BUDDY_ORDER) return NULL;
+
+    size_t k = need_order;
+    while (k <= MAX_BUDDY_ORDER && buddy_area[k].nr_blocks == 0) k++;
+    if (k > MAX_BUDDY_ORDER) return NULL;
+
+    struct Page *block = buddy_list_pop(k);
+    while (k > need_order) {
+        k--;
+        size_t half = pages_of_order(k);
+        struct Page *second = block + half;
+        buddy_list_add(k, second);
+    }
+    ClearPageProperty(block);
+    for (size_t i = 0; i < pages_of_order(need_order); i++) {
+        set_page_ref(block + i, 0);
+    }
+    return block;
+}
+```
+1. 先将请求页数向上取整到最小的 2 的幂，得到目标阶 `need_order`。  
+2. 从该阶开始向上寻找第一个非空链表，若找不到则返回 `NULL`。  
+3. 取出该阶的一个空闲块，若阶数过大，就不断对半拆分：保留低地址半块，另一半重新挂回低一阶链表。  
+4. 当拆分到目标阶后，清除块头标志并返回块头页。
+## 6. 释放与合并算法
+
+### 6.1 `free_pages(base, n)` 的核心思路
+
+```c++
+static void buddy_free_pages(struct Page *base, size_t n) {
+    if (n == 0) return;
+    size_t order = ilog2_ceil(n);
+    if (order > MAX_BUDDY_ORDER) return;
+
+    size_t idx = page_index(base);
+    assert(idx < arena_npages);
+
+    while (order < MAX_BUDDY_ORDER) {
+        size_t buddy_idx = idx ^ pages_of_order(order);
+        if (buddy_idx >= arena_npages) break;
+        struct Page *buddy = index_page(buddy_idx);
+        if (!(PageProperty(buddy) && buddy->property == order)) break;
+        buddy_list_del(order, buddy);
+        idx = (idx < buddy_idx) ? idx : buddy_idx;
+        order++;
+    }
+    buddy_list_add(order, index_page(idx));
+}
+```
+
+
+1. 先计算释放块的阶 `order = ceil_log2(n)`，并获得块的索引 `idx`。  
+2. 通过异或运算 `idx ^ (1 << order)` 找到伙伴块索引。  
+3. 如果伙伴块空闲且阶相同，则将两者合并成更大块并继续向上尝试；否则停止。  
+4. 最后将合并后的块头页加入对应阶的空闲链表。
+
+
+## 7. 统计与工具函数
+
+```c++
+
+static size_t buddy_nr_free_pages(void) {
+    size_t total = 0;
+    for (size_t k = 0; k <= MAX_BUDDY_ORDER; k++) {
+        total += buddy_area[k].nr_blocks * pages_of_order(k);
+    }
+    return total;
+}
+```
+
+`buddy_nr_free_pages()` 用于统计当前系统中剩余的空闲页数。
+```c++
+static inline size_t ilog2_ceil(size_t n) {
+    size_t k = 0, s = 1;
+    while (s < n) { s <<= 1; k++; }
+    return k;
+}
+```
+`ilog2_ceil(n)` 计算最小的 `k`，使得 `2^k` 不小于 `n`，分配和释放时都依赖该函数来确定阶数。
+
+---
+
+## 8. 自检用例（`buddy_check()`）
+
+
+自检函数在 `pmm_init()` 阶段运行，用于验证伙伴系统分配与回收逻辑的正确性。测试内容包括以下三个部分：
+
+1. **基础功能验证**  
+    依次执行 `alloc(1)`、`alloc(2)`、`free(1)`、`alloc(3→4)`、`free(2)`、`free(3→4)`  
+    
+2. **多阶往返测试**  
+    按照不同阶 `2^k` 依次进行分配与释放，直到块大小超过 `arena_npages/2` 为止。
+      
+3. **交错释放测试**  
+    连续分配多个块，块大小循环取 `1..7` 页，并记录每次分配的实际请求  
+    之后先释放偶数下标的块，再释放奇数下标的块，最后检查空闲页数是否恢复到初始值 。
+---
+
+## 13. 运行与评分
+
+1. 在 `pmm.c` 选择管理器：
+
+```c
+  pmm_manager = &buddy_pmm_manager;
+   ```
+
+2. 若需要让自动评分脚本通过:
+     在 `tools/grade.sh` 的 `check physical_memory_map_information` 处，将  `'memory management: best_fit_pmm_manager'`  修改为`'memory management: buddy_pmm_manager'`
+
+评分结果如下所示：
+
+![[Pasted image 20251018215836.png]]
 
 
 
