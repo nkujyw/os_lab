@@ -10,7 +10,7 @@
 #include <trap.h>
 #include <sbi.h>
 #define TICK_NUM 100
-static int print_count = 0; // 用于计算打印 "100 ticks" 的行数
+static int print_count = 0; 
 static void print_ticks() {
     cprintf("%d ticks\n", TICK_NUM);
 #ifdef DEBUG_GRADE
