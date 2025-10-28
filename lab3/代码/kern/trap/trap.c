@@ -10,10 +10,7 @@
 #include <trap.h>
 #include <sbi.h>
 #define TICK_NUM 100
-
-static size_t ticks = 0; // 用于计算时钟中断的次数
 static int print_count = 0; // 用于计算打印 "100 ticks" 的行数
-
 static void print_ticks() {
     cprintf("%d ticks\n", TICK_NUM);
 #ifdef DEBUG_GRADE
@@ -133,22 +130,17 @@ void interrupt_handler(struct trapframe *tf) {
              *(3)当计数器加到100的时候，我们会输出一个`100ticks`表示我们触发了100次时钟中断，同时打印次数（num）加一
             * (4)判断打印次数，当打印次数为10时，调用<sbi.h>中的关机函数关机
             */
-           // (1) 设置下一次时钟中断
             clock_set_next_event();
 
-            // (2) 计数器（ticks）加一
             ticks++;
 
-            // (3) 当计数器加到100
             if (ticks == TICK_NUM) {
                 ticks = 0; // 重置 ticks 计数器
-                print_ticks(); // 输出 "100 ticks"
-                print_count++; // 打印次数加一
-
-                // (4) 判断打印次数
-                if (print_count == 10) {
-                    sbi_shutdown(); // 关机
-                }
+                print_ticks(); 
+                print_count++; 
+            }
+            if (print_count == 10) {
+                sbi_shutdown(); // 关机
             }
             break;
         case IRQ_H_TIMER:
