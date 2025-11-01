@@ -117,3 +117,46 @@ sret（返回原程序）
 ### 扩展练习Challenge3：完善异常中断
 
 编程完善在触发一条非法指令异常 mret和，在 kern/trap/trap.c的异常处理函数中捕获，并对其进行处理，简单输出异常类型和异常指令触发地址，即“Illegal instruction caught at 0x(地址)”，“ebreak caught at 0x（地址）”与“Exception type:Illegal instruction"，“Exception type: breakpoint”。
+
+
+#### 1. 核心代码修改
+
+##### （1）修改 `kern/trap/trap.c` 中的异常处理函数
+
+在 `exception_handler(struct trapframe *tf)` 中添加对 **非法指令** 与 **断点** 两种异常的处理逻辑：
+
+```c
+void exception_handler(struct trapframe *tf) {
+    switch (tf->cause) {
+        case CAUSE_ILLEGAL_INSTRUCTION:
+            cprintf("Exception type: Illegal instruction\n");
+            cprintf("Illegal instruction caught at 0x%lx\n", tf->epc);
+            tf->epc += 4;
+            break;
+
+        case CAUSE_BREAKPOINT:
+            cprintf("Exception type: breakpoint\n");
+            cprintf("ebreak caught at 0x%lx\n", tf->epc);
+            tf->epc += 4;
+            break;
+
+        default:
+            cprintf("Unhandled exception! cause = %ld, epc = 0x%lx\n",
+                    tf->cause, tf->epc);
+            break;
+    }
+}
+```
+
+##### （2）修改 `kern/init/init.c`，添加触发异常的测试指令
+
+```c
+asm volatile("mret");
+asm volatile("ebreak");
+```
+
+#### 2. 代码分析
+RISC-V 在发生异常或中断时，会由硬件自动保存当前的执行状态，包括寄存器值、程序计数器和异常原因等信息到内存的 `trapframe` 中，然后跳转到 `stvec` 所指向的异常入口执行汇编写成的陷入保存逻辑。内核通过这一步接管 CPU 控制权，并进入 C 语言编写的 `trap()` 函数。在 `trap()` 内部，会根据 `trapframe` 中的 `cause` 字段判断异常类型，再分发给 `exception_handler()` 处理。修改后的 `trap.c` 能够正确识别“非法指令”和“断点”两类异常，并在控制台输出对应的异常类型和出错地址。当执行 `mret` 指令时，由于操作系统当前处于 S 模式而 `mret` 只能在 M 模式下运行，因此触发非法指令异常，异常入口会保存现场并调用 `exception_handler()` 输出信息。为了避免陷入死循环，代码将 `epc` 加 4，使程序跳过出错指令后继续执行。接着执行 `ebreak`，该指令被设计为调试断点，同样触发异常并打印出地址。两次异常分别说明非法指令和断点都能被正确捕获、打印和恢复，验证了异常入口、寄存器保存、分发与恢复机制全部正常。整个过程展现了 RISC-V 的异常处理链路：从硬件自动陷入，到软件解析与恢复，再到安全返回执行，确保系统对异常的响应是可控且可追踪的。
+
+
+
