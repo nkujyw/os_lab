@@ -45,6 +45,47 @@ static int print_count = 0;
 
 回答：描述ucore中处理中断异常的流程（从异常的产生开始），其中mov a0，sp的目的是什么？SAVE_ALL中寄寄存器保存在栈中的位置是什么确定的？对于任何中断，__alltraps 中都需要保存所有寄存器吗？请说明理由。
 
+### 1) uCore中断异常处理的整体流程
+
+```
+中断/异常发生
+       ↓
+硬件跳转 → stvec → __alltraps (trapentry.S)
+       ↓
+SAVE_ALL（保存上下文）
+       ↓
+trap(sp) —— 调用 C 函数
+       ↓
+  trap_dispatch(tf)
+     ├── interrupt_handler(tf)
+     └── exception_handler(tf)
+       ↓
+__trapret:
+RESTORE_ALL（恢复寄存器）
+sret（返回原程序）
+```
+
+1. 异常或中断发生时，硬件把当前 PC 写入 `sepc`，把原因写入 `scause`，若适用则把相关地址写入 `stval`（旧名 `sbadaddr`），随后切换到 `stvec` 指向的陷入入口执行。uCore 将 `stvec` 设为 direct 模式，对应的入口为 `__alltraps`。
+2. 在 `__alltraps` 中首先执行 `SAVE_ALL` 建立陷阱帧：把进入时的 `sp` 临时存入 `sscratch`，然后一次性为陷阱帧在内核栈上预留 `36*REGBYTES` 空间，依序保存通用寄存器（`x0..x31`）及 `sstatus/sepc/stval/scause`。其中 `x2(sp)` 通过先存 `sscratch`、后回填的方式放回它对应的槽位；同时把 `sscratch` 置零，便于区分后续是否在内核态再次陷入。
+3. 保存完现场后将陷阱帧指针传入 C 侧处理函数：`move a0, sp` 把当前 `sp`（即陷阱帧基址）作为参数传给 `trap(struct trapframe *tf)`，随后 `jal trap` 进入 C。`trap` 内部调用 `trap_dispatch(tf)` 按 `scause` 分派：若为中断则进入 `interrupt_handler(tf)`；若为异常则进入 `exception_handler(tf)`。必要时这里可能触发调度或进程状态变更。
+4. 处理完成后回到 `__trapret` 执行 `RESTORE_ALL`：先恢复 `sstatus` 与 `sepc`，再按保存时的固定偏移恢复各通用寄存器，并确保最后恢复 `sp`，随后执行 `sret` 返回到 `sepc` 指向的指令继续运行；硬件按 RISC-V 规则用 `SPIE` 恢复 `SIE` 等状态，从而回到被打断前的特权级与中断使能状态。
+
+### 2) `move a0, sp` 的目的
+
+把陷阱帧（trapframe）的地址作为参数传给 C 处理函数 `trap(tf)`。`SAVE_ALL` 后的 `sp` 就指向陷阱帧的起始地址，所以 `move a0, sp`（伪指令，等价 `addi a0, sp, 0`）就是“`a0 = tf_ptr`”。C 端就能通过这个指针读写已保存的寄存器、`sepc/scause/stval/sstatus` 等。
+
+### 3) `SAVE_ALL` 中“寄存器保存在栈中的位置”是怎么确定的？
+
+1. 预留大小固定为 `36*REGBYTES`；`REGBYTES` 为 XLEN/8（RV64 为 8，RV32 为 4）。前 32 个槽位给 x0…x31，后 4 个槽位依次放 sstatus、sepc、stval、scause。
+
+2. 槽位与寄存器编号一一对应：xN 保存在偏移 `N*REGBYTES`。x2（sp）因正在当地址寄存器使用，先把旧 sp 存到 sscratch，再取到 s0 回填到偏移 `2*REGBYTES`，从而保持“编号即偏移”的整齐布局。
+
+   这种布局与 `struct trapframe`/`struct pushregs` 的字段顺序保持一致，便于按常量偏移读写。
+
+
+### 4) `__alltraps` 里对“任何中断”都必须保存**所有**寄存器吗？
+
+
 #### 扩增练习 Challenge2：理解上下文切换机制
 
 回答：在trapentry.S中汇编代码 csrw sscratch, sp；csrrw s0, sscratch, x0实现了什么操作，目的是什么？save all里面保存了stval scause这些csr，而在restore all里面却不还原它们？那这样store的意义何在呢？
