@@ -46,11 +46,13 @@ void idt_init(void) {
     extern void __alltraps(void);
     /* Set sup0 scratch register to 0, indicating to exception vector
        that we are presently executing in the kernel */
-    write_csr(sscratch, 0);
+    write_csr(sscratch, 0); //表明CPU当前在内核态执行
     /* Set the exception vector address */
-    write_csr(stvec, &__alltraps);
+    write_csr(stvec, &__alltraps);//无论发生任何中断或异常，都请跳转到 __alltraps 这个地址去执行
 }
 
+//通过检查 trapframe 中保存的 status 寄存器，查看 SSTATUS_SPP 位是否为 1。如果为 1，
+//意味着 CPU 在进入陷阱之前就已经是 S 模式（内核态），否则为 U 模式（用户态）。
 /* trap_in_kernel - test if trap happened in kernel */
 bool trap_in_kernel(struct trapframe *tf) {
     return (tf->status & SSTATUS_SPP) != 0;
@@ -99,13 +101,14 @@ void print_regs(struct pushregs *gpr) {
     cprintf("  t5       0x%08x\n", gpr->t5);
     cprintf("  t6       0x%08x\n", gpr->t6);
 }
-
+//中断处理器
 void interrupt_handler(struct trapframe *tf) {
     intptr_t cause = (tf->cause << 1) >> 1;
     switch (cause) {
         case IRQ_U_SOFT:
             cprintf("User software interrupt\n");
             break;
+        //S模式软件中断
         case IRQ_S_SOFT:
             cprintf("Supervisor software interrupt\n");
             break;
@@ -118,13 +121,8 @@ void interrupt_handler(struct trapframe *tf) {
         case IRQ_U_TIMER:
             cprintf("User Timer interrupt\n");
             break;
+        //S模式时钟中断
         case IRQ_S_TIMER:
-            // "All bits besides SSIP and USIP in the sip register are
-            // read-only." -- privileged spec1.9.1, 4.1.4, p59
-            // In fact, Call sbi_set_timer will clear STIP, or you can clear it
-            // directly.
-            // cprintf("Supervisor timer interrupt\n");
-             /* LAB3 EXERCISE1   YOUR CODE :  */
             /*(1)设置下次时钟中断- clock_set_next_event()
              *(2)计数器（ticks）加一
              *(3)当计数器加到100的时候，我们会输出一个`100ticks`表示我们触发了100次时钟中断，同时打印次数（num）加一
@@ -149,9 +147,11 @@ void interrupt_handler(struct trapframe *tf) {
         case IRQ_M_TIMER:
             cprintf("Machine software interrupt\n");
             break;
+        
         case IRQ_U_EXT:
             cprintf("User software interrupt\n");
             break;
+        //S模式外部中断
         case IRQ_S_EXT:
             cprintf("Supervisor external interrupt\n");
             break;
@@ -166,7 +166,7 @@ void interrupt_handler(struct trapframe *tf) {
             break;
     }
 }
-
+//异常处理器
 void exception_handler(struct trapframe *tf) {
     switch (tf->cause) {
         case CAUSE_MISALIGNED_FETCH:
@@ -210,8 +210,9 @@ void exception_handler(struct trapframe *tf) {
             break;
     }
 }
-
+//陷阱分发器
 static inline void trap_dispatch(struct trapframe *tf) {
+    //如果 (intptr_t)tf->cause < 0（即最高位为 1，是负数），说明是中断，于是调用 interrupt_handler(tf)
     if ((intptr_t)tf->cause < 0) {
         // interrupts
         interrupt_handler(tf);

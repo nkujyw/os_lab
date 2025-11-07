@@ -4,7 +4,7 @@
 #include <defs.h>
 #include <intr.h>
 #include <riscv.h>
-//读取 RISC-V 架构的 sstatus (状态寄存器)，如果是1就关掉中断
+
 static inline bool __intr_save(void) {
     if (read_csr(sstatus) & SSTATUS_SIE) {
         intr_disable();
@@ -12,13 +12,13 @@ static inline bool __intr_save(void) {
     }
     return 0;
 }
-//如果进来之前是开中断的，就重开中断
+
 static inline void __intr_restore(bool flag) {
     if (flag) {
         intr_enable();
     }
 }
-//保存中断状态并关闭中断
+
 #define local_intr_save(x) \
     do {                   \
         x = __intr_save(); \

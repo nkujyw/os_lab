@@ -37,15 +37,14 @@ struct pushregs {
     uintptr_t t5;    // Temporary
     uintptr_t t6;    // Temporary
 };
-
+//陷阱帧
 struct trapframe {
-    struct pushregs gpr;
-    uintptr_t status;
-    uintptr_t epc;
-    uintptr_t badvaddr;
-    uintptr_t cause;
+    struct pushregs gpr; // 所有通用寄存器
+    uintptr_t status;    // sstatus 寄存器，S模式状态寄存器，保存当前CPU状态
+    uintptr_t epc;       // sepc 寄存器，S模式异常程序计数器，记录发生异常时的指令地址
+    uintptr_t badvaddr;  // sbadaddr 寄存器，S模式坏地址寄存器，记录导致异常的内存地址（缺页异常，地址未对齐）
+    uintptr_t cause;     // scause 寄存器，S模式异常原因寄存器，最高位表示异常来源（0-同步异常，1-中断），低位表示异常类型
 };
-
 void trap(struct trapframe *tf);
 void idt_init(void);
 void print_trapframe(struct trapframe *tf);

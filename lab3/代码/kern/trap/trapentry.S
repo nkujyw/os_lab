@@ -1,10 +1,10 @@
 #include <riscv.h>
 
-    .macro SAVE_ALL
+    .macro SAVE_ALL //一直到endm
 
-    csrw sscratch, sp
+    csrw sscratch, sp //原子交换，如果原先为用户态，那么交换之后sp切换到了内核态，如果原先为内核态，会引发更严重的报错
 
-    addi sp, sp, -36 * REGBYTES
+    addi sp, sp, -36 * REGBYTES//内核栈上分配一块空间，用于存放 trapframe
     # save x registers
     STORE x0, 0*REGBYTES(sp)
     STORE x1, 1*REGBYTES(sp)

@@ -1,8 +1,7 @@
 #include <pmm.h>
 #include <list.h>
 #include <string.h>
-#include <best_fit_pmm.h>
-#include <stdio.h>
+#include <default_pmm.h>
 
 /* In the first fit algorithm, the allocator keeps a list of free blocks (known as the free list) and,
    on receiving a request for memory, scans along the list for the first block that is large enough to
@@ -10,7 +9,7 @@
    usually split, and the remainder added to the list as another free block.
    Please see Page 196~198, Section 8.2 of Yan Wei Min's chinese book "Data Structure -- C programming language"
 */
-// LAB2 EXERCISE 1: YOUR CODE
+// LAB2
 // you should rewrite functions: default_init,default_init_memmap,default_alloc_pages, default_free_pages.
 /*
  * Details of FFMA
@@ -55,28 +54,25 @@
  *               (5.2) reset the fields of pages, such as p->ref, p->flags (PageProperty)
  *               (5.3) try to merge low addr or high addr blocks. Notice: should change some pages's p->property correctly.
  */
-static free_area_t free_area;
+free_area_t free_area;
 
 #define free_list (free_area.free_list)
 #define nr_free (free_area.nr_free)
 
 static void
-best_fit_init(void) {
+default_init(void) {
     list_init(&free_list);
     nr_free = 0;
 }
 
 static void
-best_fit_init_memmap(struct Page *base, size_t n) {
+default_init_memmap(struct Page *base, size_t n) {
     assert(n > 0);
     struct Page *p = base;
     for (; p != base + n; p ++) {
         assert(PageReserved(p));
-        // 清空当前页框的标志和属性信息，并将页框的引用计数设置为0
-        p->flags = 0;
+        p->flags = p->property = 0;
         set_page_ref(p, 0);
-        ClearPageProperty(p);
-        p->property = 0;
     }
     base->property = n;
     SetPageProperty(base);
@@ -87,41 +83,31 @@ best_fit_init_memmap(struct Page *base, size_t n) {
         list_entry_t* le = &free_list;
         while ((le = list_next(le)) != &free_list) {
             struct Page* page = le2page(le, page_link);
-            // 编写代码
-            // 1、当base < page时，找到第一个大于base的页，将base插入到它前面，并退出循环
-            // 2、当list_next(le) == &free_list时，若已经到达链表结尾，将base插入到链表尾部
             if (base < page) {
                 list_add_before(le, &(base->page_link));
                 break;
-            }
-            if (list_next(le) == &free_list) {
+            } else if (list_next(le) == &free_list) {
                 list_add(le, &(base->page_link));
-                break;
             }
         }
     }
 }
 
 static struct Page *
-best_fit_alloc_pages(size_t n) {
+default_alloc_pages(size_t n) {
     assert(n > 0);
     if (n > nr_free) {
         return NULL;
     }
     struct Page *page = NULL;
     list_entry_t *le = &free_list;
-    size_t min_size = nr_free + 1;
-    // 遍历空闲链表，查找满足需求的空闲页框
-    // 如果找到满足需求的页面，记录该页面以及当前找到的最小连续空闲页框数量
-
     while ((le = list_next(le)) != &free_list) {
         struct Page *p = le2page(le, page_link);
-        if (PageProperty(p) && p->property >= n && p->property < min_size) {
-            min_size = p->property;
+        if (p->property >= n) {
             page = p;
+            break;
         }
     }
-
     if (page != NULL) {
         list_entry_t* prev = list_prev(&(page->page_link));
         list_del(&(page->page_link));
@@ -138,7 +124,7 @@ best_fit_alloc_pages(size_t n) {
 }
 
 static void
-best_fit_free_pages(struct Page *base, size_t n) {
+default_free_pages(struct Page *base, size_t n) {
     assert(n > 0);
     struct Page *p = base;
     for (; p != base + n; p ++) {
@@ -161,7 +147,6 @@ best_fit_free_pages(struct Page *base, size_t n) {
                 break;
             } else if (list_next(le) == &free_list) {
                 list_add(le, &(base->page_link));
-                break;
             }
         }
     }
@@ -169,12 +154,6 @@ best_fit_free_pages(struct Page *base, size_t n) {
     list_entry_t* le = list_prev(&(base->page_link));
     if (le != &free_list) {
         p = le2page(le, page_link);
-        // 编写代码
-        // 1、判断前面的空闲页块是否与当前页块是连续的，如果是连续的，则将当前页块合并到前面的空闲页块中
-        // 2、首先更新前一个空闲页块的大小，加上当前页块的大小
-        // 3、清除当前页块的属性标记，表示不再是空闲页块
-        // 4、从链表中删除当前页块
-        // 5、将指针指向前一个空闲页块，以便继续检查合并后的连续空闲页块
         if (p + p->property == base) {
             p->property += base->property;
             ClearPageProperty(base);
@@ -195,7 +174,7 @@ best_fit_free_pages(struct Page *base, size_t n) {
 }
 
 static size_t
-best_fit_nr_free_pages(void) {
+default_nr_free_pages(void) {
     return nr_free;
 }
 
@@ -250,11 +229,10 @@ basic_check(void) {
     free_page(p2);
 }
 
-// LAB2: below code is used to check the best fit allocation algorithm (your EXERCISE 1) 
+// LAB2: below code is used to check the first fit allocation algorithm 
 // NOTICE: You SHOULD NOT CHANGE basic_check, default_check functions!
 static void
-best_fit_check(void) {
-    int score = 0 ,sumscore = 6;
+default_check(void) {
     int count = 0, total = 0;
     list_entry_t *le = &free_list;
     while ((le = list_next(le)) != &free_list) {
@@ -266,53 +244,41 @@ best_fit_check(void) {
 
     basic_check();
 
-    #ifdef ucore_test
-    score += 1;
-    cprintf("grading: %d / %d points\n",score, sumscore);
-    #endif
     struct Page *p0 = alloc_pages(5), *p1, *p2;
     assert(p0 != NULL);
     assert(!PageProperty(p0));
 
-    #ifdef ucore_test
-    score += 1;
-    cprintf("grading: %d / %d points\n",score, sumscore);
-    #endif
     list_entry_t free_list_store = free_list;
     list_init(&free_list);
     assert(list_empty(&free_list));
     assert(alloc_page() == NULL);
 
-    #ifdef ucore_test
-    score += 1;
-    cprintf("grading: %d / %d points\n",score, sumscore);
-    #endif
     unsigned int nr_free_store = nr_free;
     nr_free = 0;
 
-    // * - - * -
-    free_pages(p0 + 1, 2);
-    free_pages(p0 + 4, 1);
+    free_pages(p0 + 2, 3);
     assert(alloc_pages(4) == NULL);
-    assert(PageProperty(p0 + 1) && p0[1].property == 2);
-    // * - - * *
-    assert((p1 = alloc_pages(1)) != NULL);
-    assert(alloc_pages(2) != NULL);      // best fit feature
-    assert(p0 + 4 == p1);
+    assert(PageProperty(p0 + 2) && p0[2].property == 3);
+    assert((p1 = alloc_pages(3)) != NULL);
+    assert(alloc_page() == NULL);
+    assert(p0 + 2 == p1);
 
-    #ifdef ucore_test
-    score += 1;
-    cprintf("grading: %d / %d points\n",score, sumscore);
-    #endif
     p2 = p0 + 1;
-    free_pages(p0, 5);
+    free_page(p0);
+    free_pages(p1, 3);
+    assert(PageProperty(p0) && p0->property == 1);
+    assert(PageProperty(p1) && p1->property == 3);
+
+    assert((p0 = alloc_page()) == p2 - 1);
+    free_page(p0);
+    assert((p0 = alloc_pages(2)) == p2 + 1);
+
+    free_pages(p0, 2);
+    free_page(p2);
+
     assert((p0 = alloc_pages(5)) != NULL);
     assert(alloc_page() == NULL);
 
-    #ifdef ucore_test
-    score += 1;
-    cprintf("grading: %d / %d points\n",score, sumscore);
-    #endif
     assert(nr_free == 0);
     nr_free = nr_free_store;
 
@@ -326,18 +292,15 @@ best_fit_check(void) {
     }
     assert(count == 0);
     assert(total == 0);
-    #ifdef ucore_test
-    score += 1;
-    cprintf("grading: %d / %d points\n",score, sumscore);
-    #endif
 }
 
-const struct pmm_manager best_fit_pmm_manager = {
-    .name = "best_fit_pmm_manager",
-    .init = best_fit_init,
-    .init_memmap = best_fit_init_memmap,
-    .alloc_pages = best_fit_alloc_pages,
-    .free_pages = best_fit_free_pages,
-    .nr_free_pages = best_fit_nr_free_pages,
-    .check = best_fit_check,
+const struct pmm_manager default_pmm_manager = {
+    .name = "default_pmm_manager",
+    .init = default_init,
+    .init_memmap = default_init_memmap,
+    .alloc_pages = default_alloc_pages,
+    .free_pages = default_free_pages,
+    .nr_free_pages = default_nr_free_pages,
+    .check = default_check,
 };
+
