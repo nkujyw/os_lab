@@ -2,7 +2,7 @@
 #include <list.h>
 #include <string.h>
 #include <default_pmm.h>
-/*LAB2 EXERCISE 2: 2211044*/
+/*LAB2 EXERCISE 2: 2313109*/
 
 /*
  * 默认（first-fit）物理内存管理器
