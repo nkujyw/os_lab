@@ -88,7 +88,7 @@ alloc_proc(void)
     struct proc_struct *proc = kmalloc(sizeof(struct proc_struct));
     if (proc != NULL)
     {
-        // LAB4:EXERCISE1 YOUR CODE
+        // LAB4:EXERCISE1 2312478
         /*
          * below fields in proc_struct need to be initialized
          *       enum proc_state state;                      // Process state
@@ -104,7 +104,18 @@ alloc_proc(void)
          *       uint32_t flags;                             // Process flag
          *       char name[PROC_NAME_LEN + 1];               // Process name
          */
-        
+        memset(proc, 0, sizeof(struct proc_struct));
+
+        // 2. 设置进程为“未初始化”状态。
+        proc->state = PROC_UNINIT;
+
+        // 3. 设置一个无效的 PID，表示尚未分配。
+        proc->pid = -1;
+
+        // 4. 设置页目录。
+        //    所有内核线程共享内核的地址空间，
+        //    因此直接使用内核的页表 (boot_pgdir_pa)。
+        proc->pgdir = boot_pgdir_pa;
     }
     return proc;
 }
@@ -175,7 +186,7 @@ void proc_run(struct proc_struct *proc)
 {
     if (proc != current)
     {
-        // LAB4:EXERCISE3 YOUR CODE
+        // LAB4:2311786
         /*
          * Some Useful MACROs, Functions and DEFINEs, you can use them in below implementation.
          * MACROs or Functions:
@@ -184,6 +195,32 @@ void proc_run(struct proc_struct *proc)
          *   lsatp():                   Modify the value of satp register
          *   switch_to():              Context switching between two processes
          */
+        // 1. 保存当前的中断状态，并关闭中断。
+        // 这是为了保证上下文切换的“原子性”，防止在切换中途（比如刚换了页表，还没换栈指针）被中断打断。
+        bool intr_flag;
+        local_intr_save(intr_flag);
+        
+        // 2. 准备切换。
+        //    'prev' 指向即将被换下（停止运行）的进程。
+        //    'current' 指针更新为即将运行的新进程 'proc'。
+        struct proc_struct *prev = current;
+        current = proc;
+
+        // 3. 切换页表（切换地址空间）。
+        //    lsatp (load satp) 会将新进程的页表基址（proc->pgdir）加载到 satp 寄存器。
+        //    从这一行代码之后，CPU 看到的所有虚拟内存地址都将通过 *新* 进程的页表来翻译。
+        lsatp(current->pgdir);
+
+        // 4. 切换CPU上下文（切换寄存器和执行流）。
+        //    这是最关键的一步。它会：
+        //    (a) 保存 'prev' 进程的 s0-s11, sp, ra 寄存器到 prev->context 中。
+        //    (b) 从 'current' (即 proc) 进程的 current->context 中加载寄存器。
+        switch_to(&(prev->context), &(current->context));
+
+        // 5. 恢复中断状态。
+        //    注意：这行代码不是立即执行的，而是当 'prev' 进程（现在是休眠的）
+        //    未来某刻被重新调度并执行(ret)后，才会接着执行这行代码。
+        local_intr_restore(intr_flag);
 
     }
 }
