@@ -63,3 +63,41 @@ proc_run用于将指定的进程切换到CPU上运行。它的大致执行步骤
 
    - get_pte()函数中有两段形式类似的代码， 结合sv32，sv39，sv48的异同，解释这两段代码为什么如此相像。
    - 目前get_pte()函数将页表项的查找和页表项的分配合并在一个函数里，你认为这种写法好吗？有没有必要把两个功能拆开？
+
+#### 知识点总结
+- 虚拟内存：程序/CPU 可见的地址空间，由操作系统映射到物理内存以实现隔离与扩展。
+- 地址虚拟化：分页将地址拆为页号与页内偏移，页表负责 VPN→PFN 转换。
+- 按需分页：未访问页延迟分配；缺页时触发调入；ucore 当前无 swap。
+- 页换入/换出：将不常用页写回磁盘以释放内存，必要时再读回。
+- sv39 地址：39 位虚拟地址分为 9+9+9+12（VPN[2/1/0] + PGOFF）。
+- sv39 PTE：包含 PPN[2/1/0] 与标志位（V,R,W,X,U,G,A,D）描述物理与权限。
+- 关键宏：PDX1/PDX0/PTX/PPN/PGOFF 提取段，PGADDR 合成线性地址，PTE_ADDR 还原物理地址。
+- 多级页表：sv39 为三级结构，上层称 Page Directory，按层次逐级分配与查找。
+- get_pte：定位或按需创建目标 PTE，分配页表页并清零，填充上级 PDE 标志。
+- page_insert：取 PTE、增引用、替换旧映射、写入新 PTE 并刷新 TLB。
+- page_remove：定位 PTE 并调用 page_remove_pte，递减引用、可能释放物理页并清零 PTE。
+- 引用计数：page_ref 跟踪物理页被多少虚拟页映射，防止误回收。
+- TLB 管理：修改页表后必须调用 tlb_invalidate 保证地址转换一致性。
+- 段权限映射：为 .text/.rodata/.data/.bss 做精细映射以设置正确读写执行权限。
+- 重映射策略：通常新建精细页表完成映射后切换 satp 替换原大页映射。
+- proc_struct：进程控制块，记录 state、pid、kstack、parent、mm、context、tf、pgdir、name 等。
+- mm 字段：保存进程地址空间、页表根与映射信息，用于地址转换与保护。
+- 进程状态：四态模型 PROC_UNINIT、PROC_RUNNABLE、PROC_SLEEPING、PROC_ZOMBIE。
+- context：保存需在切换时恢复的寄存器（ra, sp, s0–s11），仅保存 callee-saved。
+-  trapframe：保存用户态进入内核时的完整寄存器现场，可由内核修改返回值等。
+- kstack：每线程专用内核栈（uCore 用两页），位于内核空间，退出时可快速回收。
+- idleproc：第 0 号内核线程，pid=0，pgdir=boot_pgdir，need_resched=1，使用 bootstack。
+- kernel_thread：构造临时 trapframe（s0=fn,s1=arg,epc=kernel_thread_entry）后调用 do_fork。
+- do_fork 要点：alloc_proc、setup_stack、copy/共享 mm、copy_thread、入链表、置 RUNNABLE。
+- copy_thread：在新内核栈复制 trapframe，设子进程 a0=0，context.ra=forkret，context.sp 指向 tf。
+- 调度流程：cpu_idle 检查 need_resched，调用 schedule 清标志并在 proc_list 找下一个 RUNNABLE。
+- 切换执行：proc_run 切换 satp 到新 pgdir，再调用 switch_to 保存/恢复寄存器完成上下文切换。
+  
+- 基本原理概述：虚拟内存是操作系统为程序提供的逻辑地址空间，CPU/程序看到的地址由页表映射到物理内存，借此实现地址隔离、访问保护和内存扩展。分页将逻辑地址拆为页号与页内偏移，MMU/页表完成 VPN→PFN 的转换，TLB 缓存常用映射以提升性能；按需分页可延迟分配物理帧以节省内存，换页（swap）把冷页写入磁盘以扩大可用逻辑内存，但会带来高延迟和抖动风险。
+  
+- 页表项设计思路：页表项（PTE）既承载物理页号（PPN）也承载权限与状态位，常见字段包括有效位（V）、读/写/执行位（R/W/X）、用户位（U）、访问/脏位（A/D）及全局位等；设计要点是把地址与标志清晰分离、保证对齐并能高效提取/组装（如 PDX/PTX/PGOFF、PGADDR、PTE_ADDR 等宏），同时利用 A/D 等位支持高效置换策略和写回优化，并通过严格权限位实现内核与用户态、只读段与可写段的安全隔离。
+使用多级页表实现虚拟存储：以 RISC-V sv39 为例采用三级页表，地址逐级查找 VPN[2]→VPN[1]→VPN[0] 得到最终 PTE；实现上 get_pte 支持按需分配页表页并清零，page_insert/page_remove 负责建立/撤销映射并维护物理页引用计数，page_remove_pte 在撤销时处理引用递减与可能的物理页释放，所有页表修改后须调用 tlb_invalidate 保持一致性；对于需要细粒度权限的段（如 .text/.rodata/.data/.bss），常需放弃粗糙大页、重建精细页表并切换 satp 来完成重映射。
+
+- 内核线程管理：内核线程在内核虚拟空间运行、通常共享内核页表，无需独立地址空间；创建流程由 kernel_thread 构造初始 trapframe（将目标函数与参数放入寄存器、设置 sstatus 与 epc 指向内核入口）并调用 do_fork，do_fork 负责分配 PCB 与内核栈、设置上下文与 trapframe（由 copy_thread 完成），使新线程在被调度时可从 kernel_thread_entry 恢复并执行指定函数，线程执行完毕后通过 do_exit 回收。
+  
+- 设计关键数据结构：proc_struct 包含进程生命周期与运行所需的所有元信息——状态（PROC_UNINIT/RUNNABLE/SLEEPING/ZOMBIE）、PID、内核栈地址 kstack、调度标志 need_resched、父进程 parent、内存管理指针 mm、上下文 context（保存 callee-saved 寄存器以供 switch）、trapframe tf（保存用户态陷入内核时完整寄存器现场）、页表根 pgdir、标志与名字，以及用于全局管理的链表/哈希链结点；这些字段使得调度、地址空间切换、系统调用返回与资源回收都可被正确实施，并通过全局结构（current、initproc、proc_list、hash_list）实现进程的查找与调度管理。
