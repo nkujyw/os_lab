@@ -8,35 +8,55 @@ alloc_proc函数（位于kern/process/proc.c中）负责分配并返回一个新
 
 ### 1. alloc_proc 的设计与实现过程 ​      
 ```c++
-static struct proc_struct *alloc_proc(void)
+static struct proc_struct *
+alloc_proc(void)
 {
     struct proc_struct *proc = kmalloc(sizeof(struct proc_struct));
     if (proc != NULL)
     {
-        memset(proc, 0, sizeof(struct proc_struct));
-        proc->state = PROC_UNINIT;
-        proc->pid = -1;。
-        proc->pgdir = boot_pgdir_pa;
+        // 进程状态相关
+        proc->state = PROC_UNINIT;     
+        proc->pid = -1;                 
+        proc->runs = 0;                 
+        proc->need_resched = 0;         
+
+        // 栈/地址空间
+        proc->kstack = 0;               
+        proc->mm = NULL;                
+        proc->pgdir = boot_pgdir_pa;    
+
+        // 关系/标志/名字
+        proc->parent = NULL;
+        proc->flags = 0;
+        memset(proc->name, 0, sizeof(proc->name));
+
+        // 上下文与陷入帧
+        memset(&proc->context, 0, sizeof(proc->context)); 
+        proc->tf = NULL;                          
     }
     return proc;
 }
 ```
+
 `alloc_proc()` 的作用是为新创建的内核线程或进程分配并初始化一个进程控制块（PCB）。
 
-1. **分配 PCB 空间**  
-    使用 `kmalloc(sizeof(struct proc_struct))` 为一个新的 `proc_struct` 申请内存。如果申请失败则直接返回 `NULL`，避免后续操作导致崩溃。
-    
-2. **清空结构体内容**  
-    成功分配后，通过 `memset(proc, 0, sizeof(struct proc_struct));` 将 PCB 中所有字段初始化为 0，保证无任何残留数据，对后续字段初始化更加安全可靠。
-    
-3. **初始化关键字段**  
+首先使用 `kmalloc` 为 PCB 分配一段连续内核内存，接着初始化进程的基本状态字段：
 
-   在完成 PCB 结构体的内存分配与清零后，我对其中的关键成员进行了最基本的初始化。首先将进程状态设置为 `PROC_UNINIT`，表示该进程尚未进入就绪或运行阶段；
-   随后将 `pid` 赋值为 `-1`，作为一个无效的占位 PID，用于明确标识该进程尚未被正式分配进程号；
-   最后，由于本实验创建的是内核线程，因此其地址空间与内核共享，我将 `pgdir` 字段直接设置为 `boot_pgdir_pa`，使其使用内核的页目录表。通过以上初始化操作，为后续进一步构建内核线程运行环境奠定了基础。
+| 字段名          | 初始化值          | 含义说明                          |
+| ------------ | ------------- | ----------------------------- |
+| state        | PROC_UNINIT   | 进程处于“未初始化”状态，刚创建尚未准备运行        |
+| pid          | -1            | 表示此时还没有正式分配 PID               |
+| runs         | 0             | 记录该进程被调度运行的次数，初始为 0           |
+| need_resched | 0             | 该进程在创建阶段还不需要立即触发调度。           |
+| kstack       | 0             | 内核栈尚未分配，由 setup_stack 在后续完成   |
+| mm           | NULL          | 创建的是内核线程，不需要用户态地址空间           |
+| pgdir        | boot_pgdir_pa | 使用内核页表，因为所有内核线程共享同一个内核地址空间    |
+| parent       | NULL          | 刚创建的内核线程尚无父进程                 |
+| flags        | 0             | 进程标志位，创建时清零，后续根据 clone 行为设置   |
+| name[]       | 全部清零          | 预留线程名空间，之后用 set_proc_name 来命名 |
+| context      | 全部清零          | 保存线程切换时寄存器现场的数据结构，初始为空        |
+| tf           | NULL          | 只能放在该线程自己的内核栈中，因此先置为空。        |
 
-4. **返回新创建的 PCB**  
-    若上述步骤都成功，则返回设置完成的 `proc_struct` 指针。
 
 ### 2. struct context context 
 
