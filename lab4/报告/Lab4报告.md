@@ -104,9 +104,51 @@ proc_run用于将指定的进程切换到CPU上运行。它的大致执行步骤
 
 完成代码编写后，编译并运行代码：make qemu
 
+实现代码如下：
+```C
+void proc_run(struct proc_struct *proc)
+{
+    if (proc != current)
+    {
+        // LAB4:2311786
+        // 1. 保存当前的中断状态，并关闭中断。
+        bool intr_flag;
+        local_intr_save(intr_flag);
+        
+        // 2. 准备切换。
+        struct proc_struct *prev = current;
+        current = proc;
 
+        // 3. 切换页表（切换地址空间）。
+        lsatp(current->pgdir);
 
+        // 4. 切换CPU上下文（切换寄存器和执行流）
+        switch_to(&(prev->context), &(current->context));
 
+        // 5. 恢复中断状态。
+        local_intr_restore(intr_flag);
+
+    }
+}
+```
+首先需要关闭中断，因为如果不关中断，假设 CPU 刚切换了页表 (lsatp) 但还没切换栈 (switch_to)，此时若发生中断，中断处理程序会使用新页表但旧栈，这会导致严重的内存访问错误；之后更新当前的进程指针；之后使用lsatp 指令更新 satp 寄存器，使 CPU 开始使用新进程的页表；最后保存 prev 进程的寄存器到 prev->context，并从 current->context 加载新进程的寄存器。这样当 switch_to 的 ret 指令执行时，CPU 的 ra（返回地址）寄存器已经被换成了新进程的值（通常是 forkret），于是 CPU 跳转到新进程的代码开始执行。
+
+在本实验的执行过程中，创建且运行了2个内核线程：
+第一个，idleproc (PID 0)：
+
+系统启动时，由 proc_init 函数手动构造（调用 alloc_proc 并直接赋值）。它是系统的第 0 个进程。当 OS 初始化完成后，执行流进入 cpu_idle 函数的死循环，此时运行的就是 idleproc。它的主要工作是查询是否有其他就绪进程，并进行调度。它是一个只有内核态的“空闲进程”，永远不会退出。
+
+第二个，initproc (PID 1)：
+
+由 idleproc 在 proc_init 中调用 kernel_thread -> do_fork 创建。：idleproc 执行 schedule() 时，发现了状态为 PROC_RUNNABLE 的 initproc，于是调用 proc_run 切换到它。initproc 随后执行 init_main 函数，打印 "Hello World"。它执行完 init_main 后会调用 do_exit，最终成为僵尸进程 (PROC_ZOMBIE)。
+
+`make qemu`结果如下：
+![alt text](b6523d7029d37e67be7849fa1f051bbc.png)
+
+且`make grade`结果如下：
+![alt text](26654af4c7cccaa7aba1ce28516f3562.png)
+
+可以见得我们的代码编写成功！
 
 ## 扩展练习 Challenge：
 
