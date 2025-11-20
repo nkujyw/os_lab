@@ -65,33 +65,22 @@ proc_run用于将指定的进程切换到CPU上运行。它的大致执行步骤
    - 目前get_pte()函数将页表项的查找和页表项的分配合并在一个函数里，你认为这种写法好吗？有没有必要把两个功能拆开？
 
 #### 知识点总结
-- 虚拟内存：程序/CPU 可见的地址空间，由操作系统映射到物理内存以实现隔离与扩展。
-- 地址虚拟化：分页将地址拆为页号与页内偏移，页表负责 VPN→PFN 转换。
-- 按需分页：未访问页延迟分配；缺页时触发调入；ucore 当前无 swap。
-- 页换入/换出：将不常用页写回磁盘以释放内存，必要时再读回。
-- sv39 地址：39 位虚拟地址分为 9+9+9+12（VPN[2/1/0] + PGOFF）。
-- sv39 PTE：包含 PPN[2/1/0] 与标志位（V,R,W,X,U,G,A,D）描述物理与权限。
-- 关键宏：PDX1/PDX0/PTX/PPN/PGOFF 提取段，PGADDR 合成线性地址，PTE_ADDR 还原物理地址。
-- 多级页表：sv39 为三级结构，上层称 Page Directory，按层次逐级分配与查找。
-- get_pte：定位或按需创建目标 PTE，分配页表页并清零，填充上级 PDE 标志。
-- page_insert：取 PTE、增引用、替换旧映射、写入新 PTE 并刷新 TLB。
-- page_remove：定位 PTE 并调用 page_remove_pte，递减引用、可能释放物理页并清零 PTE。
-- 引用计数：page_ref 跟踪物理页被多少虚拟页映射，防止误回收。
-- TLB 管理：修改页表后必须调用 tlb_invalidate 保证地址转换一致性。
-- 段权限映射：为 .text/.rodata/.data/.bss 做精细映射以设置正确读写执行权限。
-- 重映射策略：通常新建精细页表完成映射后切换 satp 替换原大页映射。
-- proc_struct：进程控制块，记录 state、pid、kstack、parent、mm、context、tf、pgdir、name 等。
-- mm 字段：保存进程地址空间、页表根与映射信息，用于地址转换与保护。
-- 进程状态：四态模型 PROC_UNINIT、PROC_RUNNABLE、PROC_SLEEPING、PROC_ZOMBIE。
-- context：保存需在切换时恢复的寄存器（ra, sp, s0–s11），仅保存 callee-saved。
--  trapframe：保存用户态进入内核时的完整寄存器现场，可由内核修改返回值等。
-- kstack：每线程专用内核栈（uCore 用两页），位于内核空间，退出时可快速回收。
-- idleproc：第 0 号内核线程，pid=0，pgdir=boot_pgdir，need_resched=1，使用 bootstack。
-- kernel_thread：构造临时 trapframe（s0=fn,s1=arg,epc=kernel_thread_entry）后调用 do_fork。
-- do_fork 要点：alloc_proc、setup_stack、copy/共享 mm、copy_thread、入链表、置 RUNNABLE。
-- copy_thread：在新内核栈复制 trapframe，设子进程 a0=0，context.ra=forkret，context.sp 指向 tf。
-- 调度流程：cpu_idle 检查 need_resched，调用 schedule 清标志并在 proc_list 找下一个 RUNNABLE。
-- 切换执行：proc_run 切换 satp 到新 pgdir，再调用 switch_to 保存/恢复寄存器完成上下文切换。
+虚拟内存与分页的本质是把程序看到的线性地址空间与物理内存解耦：CPU发出的虚拟地址通过页表（由操作系统维护）映射到物理帧，MMU和TLB承担硬件加速。这样做有三重好处：一是进程隔离与访问保护（通过PTE的权限位限制读/写/执行）；二是逻辑上扩展内存（程序可使用比物理内存更大的地址空间）；三是延迟分配与共享（按需分页只在首次访问时分配物理页，文件映射可实现进程间共享）。代价在于缺页处理和换页带来的高延迟，频繁换页会导致抖动（thrashing）。在 uCore 的教学实现中常见简化——没有 swap，因此按需分配存在但不能把冷页写到磁盘。
+
+以 RISC-V sv39 为例，39 位虚拟地址按 9/9/9/12 划分为 VPN[2]/VPN[1]/VPN[0]/PGOFF，物理地址由 PPN2
+/PPN[1]/PPN[0]/PGOFF 表示，页表是三级的（最高层通常称为 Page Directory）。页表项（PTE）同时保存 PPN 字段和一组控制位（V,R,W,X,U,A,D,G 等），既用来恢复物理地址也用来控制访问与置换策略。实现中常用的宏（如 PDX1/PDX0/PTX/PGOFF、PGADDR、PTE_ADDR）负责把线性地址拆解出各级索引或把 PTE 中的 PPN 还原为物理地址，以便在内核中用 KADDR 访问对应页表页。
+
+多级页表的实现要点在于逐级查找与按需创建页表页。get_pte 的职责就是对给定虚拟地址定位其最终 PTE：从 pgdir 的 PDX1 索引查到第一级 PDE，若无有效项且允许创建便分配一页做为下一层页表、清零并设置相应 PDE（通常初始带 PTE_U|PTE_V）；然后继续 PDX0 层直到 PTX 得到对应的 pte_t 指针并返回。这里的实现必须处理物理地址与内核虚拟地址的互转（page2pa / KADDR），并保证新分配页表页被清零以避免信息泄露或脏条目。多级结构节省了稀疏地址空间的内存开销，但会增加查表内存访问，TLB与大页是常用的优化手段。
+
+建立与撤销映射的原子性与引用计数是可靠实现的核心。page_insert 的流程：调用 get_pte（按需创建）拿到 PTE 指针，先将被映射物理页的引用计数加一；若目标 PTE 已有效且映射到不同物理页，则调用 page_remove_pte 减少旧页引用并在必要时释放物理页；最后写入新的 PTE（包含 pte_create(page2ppn(page), PTE_V|perm)），并执行 tlb_invalidate 以使得 MMU/CPU 的翻译缓存一致。page_remove_pte 在清除映射时先检查 PTE_V，找到对应 struct Page、page_ref_dec、在引用变为 0 时 free_page，然后把 PTE 清 0 并刷新 TLB。实现上要注意写 PTE 与刷新 TLB 的顺序，以及并发/中断下的原子性（通常在修改页表时要临时禁中断或持锁）。
+
+对于内核镜像各段（.text/.rodata/.data/.bss），单一的大页（例如在早期引导时建立的粗糙 Giga-Page）权限相同会导致安全问题（例如可以写入 .text）。正确做法是对各段进行精细映射：为每个段按页建立 PTE 并设置恰当的 R/W/X/U 标志，必要时采用写时复制来支持共享只读与写时分离；实现时一种常见策略是构造一张新的精细页表、在新页表内为每个虚拟页设置正确权限，然后用 satp 指向新页表原子切换，最后回收旧的粗糙映射。这一过程要求在切换时保证短暂的一致性窗口并刷新 TLB。
+
+进程控制块（proc_struct）把一个进程/线程的所有元信息集中：状态（PROC_UNINIT/RUNNABLE/SLEEPING/ZOMBIE）、PID、内核栈地址 kstack、调度标志 need_resched、父进程指针 parent、内存管理指针 mm（描述地址空间与页表根）、context（保存 callee-saved 寄存器 ra/sp/s0–s11，用于 switch_to 恢复）、trapframe（保存用户态进入内核时的完整寄存器现场以便 __trapret 恢复）、pgdir（页表根的物理地址）、名字与链表/哈希链结点等。区分 context 与 trapframe 很重要：context 仅保存切换时必须恢复的寄存器（减少开销），而 trapframe 是中断/系统调用时完整的寄存器快照，内核可修改其字段（如 a0、epc）以控制系统调用返回值或下一次返回的 PC。
+
+内核线程的创建与调度链路从 kernel_thread 开始：kernel_thread 用局部 trapframe 填入要执行的函数指针（s0）与参数（s1），设置 sstatus（将 SPP/SPIE 置位、清 SIE）并把 epc 指向 kernel_thread_entry，然后调用 do_fork。do_fork 负责 alloc_proc、分配内核栈、按 clone_flags 决定 mm 的复制或共享（内核线程通常 CLONE_VM 共享内核地址空间）、调用 copy_thread 在新栈上复制 trapframe 并设置 context（context.ra=forkret、context.sp 指向 trapframe），把新进程插入 proc_list 并置为 RUNNABLE。forkret 和 forkrets 负责在第一次切换进入新进程时把 sp 设置为该进程的 trapframe 并跳回 __trapret，以从 trapframe 恢复完整寄存器；kernel_thread_entry 则把 s1 移到 a0 并 jalr s0 来调用用户指定函数，函数返回后执行 do_exit 完成清理。
+
+调度与上下文切换的实际操作由 cpu_idle、schedule、proc_run 与 switch_to 协同完成。cpu_idle 循环检查 current->need_resched 并在为真时调用 schedule；schedule 将当前 need_resched 清零、在 proc_list 中按 FIFO/轮转策略查找下一个 PROC_RUNNABLE（当前非 idle 则从 next 节点开始，idle 则从表头查找，找不到则回退到 idleproc），找到后调用 proc_run：proc_run 先把新进程的 pgdir 加载到 satp（切换地址空间），然后调用 switch_to 完成寄存器层面的切换。switch_to 的汇编实现仅保存并恢复被调用者保存寄存器（ra, s0–s11），以最小开销恢复上下文并返回到新进程的 context.ra（通常是 forkret），随后通过 forkrets/__trapret 从 trapframe 恢复剩余寄存器并回到进程执行流。
   
 - 基本原理概述：虚拟内存是操作系统为程序提供的逻辑地址空间，CPU/程序看到的地址由页表映射到物理内存，借此实现地址隔离、访问保护和内存扩展。分页将逻辑地址拆为页号与页内偏移，MMU/页表完成 VPN→PFN 的转换，TLB 缓存常用映射以提升性能；按需分页可延迟分配物理帧以节省内存，换页（swap）把冷页写入磁盘以扩大可用逻辑内存，但会带来高延迟和抖动风险。
   
