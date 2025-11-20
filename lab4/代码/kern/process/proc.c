@@ -104,18 +104,26 @@ alloc_proc(void)
          *       uint32_t flags;                             // Process flag
          *       char name[PROC_NAME_LEN + 1];               // Process name
          */
-        memset(proc, 0, sizeof(struct proc_struct));
+      
+        // 进程状态相关
+        proc->state = PROC_UNINIT;      // 刚分配，尚未可调度
+        proc->pid = -1;                 // 尚未分配 PID
+        proc->runs = 0;                 // 运行次数为 0
+        proc->need_resched = 0;         // 默认不需要重新调度
 
-        // 2. 设置进程为“未初始化”状态。
-        proc->state = PROC_UNINIT;
+        // 栈/地址空间
+        proc->kstack = 0;               // 内核栈地址待 setup_kstack 设置
+        proc->mm = NULL;                // 本实验不创建用户态地址空间（仅内核线程）
+        proc->pgdir = boot_pgdir_pa;    // 使用内核页表（RISC-V: satp 的物理基址）
 
-        // 3. 设置一个无效的 PID，表示尚未分配。
-        proc->pid = -1;
+        // 关系/标志/名字
+        proc->parent = NULL;
+        proc->flags = 0;
+        memset(proc->name, 0, sizeof(proc->name));
 
-        // 4. 设置页目录。
-        //    所有内核线程共享内核的地址空间，
-        //    因此直接使用内核的页表 (boot_pgdir_pa)。
-        proc->pgdir = boot_pgdir_pa;
+        // 上下文与陷入帧
+        memset(&proc->context, 0, sizeof(proc->context)); // ra/sp/s0–s11 清零
+        proc->tf = NULL;                                  // 由 copy_thread() 放到内核栈顶
     }
     return proc;
 }
