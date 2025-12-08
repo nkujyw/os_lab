@@ -724,6 +724,18 @@ load_icode(unsigned char *binary, size_t size)
      *          hint: check meaning of SPP, SPIE in SSTATUS, use them by SSTATUS_SPP, SSTATUS_SPIE(defined in risv.h)
      */
 
+     // 1. 设置用户栈指针 (sp)
+    tf->gpr.sp = USTACKTOP;
+
+    // 2. 设置异常程序计数器 (epc)
+    tf->epc = elf->e_entry;
+
+    // 3. 设置状态寄存器 (status/sstatus)
+    // SSTATUS_SPP (Supervisor Previous Privilege): 设为 0，代表中断返回后处于 User Mode
+    // SSTATUS_SPIE (Supervisor Previous Interrupt Enable): 设为 1，代表中断返回后开启中断
+    tf->status = read_csr(sstatus);
+    tf->status &= ~SSTATUS_SPP; // 确保返回后是用户态 (SPP=0)
+    tf->status |= SSTATUS_SPIE; // 确保返回后中断是使能的 (SPIE=1)
     ret = 0;
 out:
     return ret;
