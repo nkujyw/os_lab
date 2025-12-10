@@ -116,19 +116,22 @@ void interrupt_handler(struct trapframe *tf)
         cprintf("User software interrupt\n");
         break;
     case IRQ_S_TIMER:
-         clock_set_next_event();
+        clock_set_next_event();
 
         ticks++;
 
-        if (ticks == TICK_NUM) {
+        if (ticks == TICK_NUM)
+        {
             ticks = 0; // 重置 ticks 计数器
-            print_ticks(); 
-            print_count++; 
+            print_ticks();
+            print_count++;
+            current->need_resched = 1; // request scheduler on return to user
         }
-        if (print_count == 10) {
+        if (print_count == 10)
+        {
             sbi_shutdown(); // 关机
         }
-        break; 
+        break;
     case IRQ_H_TIMER:
         cprintf("Hypervisor software interrupt\n");
         break;

@@ -120,11 +120,16 @@ alloc_proc(void)
         // 关系/标志/名字
         proc->parent = NULL;
         proc->flags = 0;
+        proc->wait_state = 0;
+        proc->exit_code = 0;
+        proc->cptr = proc->optr = proc->yptr = NULL;
         memset(proc->name, 0, sizeof(proc->name));
 
         // 上下文与陷入帧
         memset(&proc->context, 0, sizeof(proc->context)); // ra/sp/s0–s11 清零
         proc->tf = NULL;                                  // 由 copy_thread() 放到内核栈顶
+        list_init(&(proc->list_link));
+        list_init(&(proc->hash_link));
     }
     return proc;
 }
@@ -469,15 +474,21 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
         goto bad_fork_cleanup_kstack;
     }
 
+    bool intr_flag;
+    local_intr_save(intr_flag);  //  必须关中断，保护父子链结构
+
     proc->parent = current;
+    current->wait_state = 0;
     proc->pid = get_pid();
 
     copy_thread(proc, stack, tf);
     hash_proc(proc);
-    list_add(&proc_list, &(proc->list_link));
+    set_links(proc);
+
 
     wakeup_proc(proc);
-    nr_process++;
+
+    local_intr_restore(intr_flag); //  父子链建立完毕才能允许调度
     ret = proc->pid;
 
     // LAB5 YOUR CODE : (update LAB4 steps)
