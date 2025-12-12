@@ -135,7 +135,8 @@ exec 是在当前进程内部替换用户态程序的系统调用。用户态调
                            v
                        （被销毁）
 ```
-                  
+make grade结果如下：               
+![make grade](c31578a1cd1a0c16d5e474654934d4ef.jpg)
 
 ## 扩展练习 Challenge
 
