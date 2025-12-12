@@ -26,7 +26,7 @@ static void print_ticks()
     panic("EOT: kernel seems ok.");
 #endif
 }
-
+extern int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr);
 /* idt_init - initialize IDT to each of the entry points in kern/trap/vectors.S */
 void idt_init(void)
 {
@@ -116,21 +116,27 @@ void interrupt_handler(struct trapframe *tf)
         cprintf("User software interrupt\n");
         break;
     case IRQ_S_TIMER:
+        /* LAB5 GRADE   YOUR CODE :  */
+        /* 时间片轮转： 
+            *(1) 设置下一次时钟中断（clock_set_next_event）
+            *(2) ticks 计数器自增
+            *(3) 每 TICK_NUM 次中断（如 100 次），进行判断当前是否有进程正在运行，如果有则标记该进程需要被重新调度（current->need_resched）
+        */
+        // 1. 设置下一次时钟中断
         clock_set_next_event();
-
+        
+        // 2. 增加 tick 计数
         ticks++;
+        
+        // 3. 检查是否需要调度
+        // 如果 ticks 累计达到 TICK_NUM (100)，说明时间片用完了
+        if (ticks % TICK_NUM == 0) {
+            // print_ticks(); // 可选：打印一下 tick 信息，证明还活着
+            assert(current != NULL);
+            current->need_resched = 1; // 标记当前进程需要被抢占
+        }
+        break;
 
-        if (ticks == TICK_NUM)
-        {
-            ticks = 0; // 重置 ticks 计数器
-            print_ticks();
-            print_count++;
-            current->need_resched = 1; // request scheduler on return to user
-        }
-        if (print_count == 10)
-        {
-            sbi_shutdown(); // 关机
-        }
         break;
     case IRQ_H_TIMER:
         cprintf("Hypervisor software interrupt\n");
@@ -156,6 +162,30 @@ void interrupt_handler(struct trapframe *tf)
     }
 }
 void kernel_execve_ret(struct trapframe *tf, uintptr_t kstacktop);
+
+// 插入在 exception_handler 之前
+static int pgfault_handler(struct trapframe *tf) {
+    extern struct mm_struct *check_mm_struct;
+    struct mm_struct *mm;
+    
+    // 判断是内核检查时的缺页，还是用户进程的缺页
+    if (check_mm_struct != NULL) {
+        assert(current == NULL);
+        mm = check_mm_struct;
+    } else {
+        if (current == NULL) {
+            print_trapframe(tf);
+            print_regs(&tf->gpr);
+            panic("unhandled page fault.\n");
+        }
+        mm = current->mm;
+    }
+    
+    // 调用 vmm.c 中的 do_pgfault
+    // tf->cause 是错误码（读/写），tf->tval 是出错的虚拟地址
+    return do_pgfault(mm, tf->cause, tf->tval);
+}
+
 void exception_handler(struct trapframe *tf)
 {
     int ret;
@@ -189,7 +219,7 @@ void exception_handler(struct trapframe *tf)
         panic("AMO address misaligned\n");
         break;
     case CAUSE_STORE_ACCESS:
-        cprintf("Store/AMO access fault\n");
+        //cprintf("Store/AMO access fault\n");
         break;
     case CAUSE_USER_ECALL:
         // cprintf("Environment call from U-mode\n");
@@ -214,7 +244,12 @@ void exception_handler(struct trapframe *tf)
         cprintf("Load page fault\n");
         break;
     case CAUSE_STORE_PAGE_FAULT:
-        cprintf("Store/AMO page fault\n");
+        //cprintf("Store/AMO page fault\n");
+        if ((ret = pgfault_handler(tf)) != 0) {
+            print_trapframe(tf);
+            panic("handle pgfault failed. %e\n", ret);
+        }
+        break;
         break;
     default:
         print_trapframe(tf);

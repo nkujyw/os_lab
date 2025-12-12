@@ -373,66 +373,57 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end)
  *
  * CALL GRAPH: copy_mm-->dup_mmap-->copy_range
  */
-int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
-               bool share)
-{
+// 文件：kern/mm/pmm.c
+
+int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share) {
     assert(start % PGSIZE == 0 && end % PGSIZE == 0);
     assert(USER_ACCESS(start, end));
-    // copy content by page unit.
-    do
-    {
-        // call get_pte to find process A's pte according to the addr start
+    do {
         pte_t *ptep = get_pte(from, start, 0), *nptep;
-        if (ptep == NULL)
-        {
+        if (ptep == NULL) {
             start = ROUNDDOWN(start + PTSIZE, PTSIZE);
             continue;
         }
-        // call get_pte to find process B's pte according to the addr start. If
-        // pte is NULL, just alloc a PT
-        if (*ptep & PTE_V)
-        {
-            if ((nptep = get_pte(to, start, 1)) == NULL)
-            {
+        if (*ptep & PTE_V) {
+            if ((nptep = get_pte(to, start, 1)) == NULL) {
                 return -E_NO_MEM;
             }
             uint32_t perm = (*ptep & PTE_USER);
-            // get page from ptep
             struct Page *page = pte2page(*ptep);
-            // alloc a page for process B
-            struct Page *npage = alloc_page();
             assert(page != NULL);
-            assert(npage != NULL);
             int ret = 0;
-            /* LAB5:EXERCISE2 2312478
-             * replicate content of page to npage, build the map of phy addr of
-             * nage with the linear addr start
-             *
-             * Some Useful MACROs and DEFINEs, you can use them in below
-             * implementation.
-             * MACROs or Functions:
-             *    page2kva(struct Page *page): return the kernel vritual addr of
-             * memory which page managed (SEE pmm.h)
-             *    page_insert: build the map of phy addr of an Page with the
-             * linear addr la
-             *    memcpy: typical memory copy function
-             *
-             * (1) find src_kvaddr: the kernel virtual address of page
-             * (2) find dst_kvaddr: the kernel virtual address of npage
-             * (3) memory copy from src_kvaddr to dst_kvaddr, size is PGSIZE
-             * (4) build the map of phy addr of  nage with the linear addr start
-             */
-            void *src_kvaddr = page2kva(page);
-            void *dst_kvaddr = page2kva(npage);
-            memcpy(dst_kvaddr, src_kvaddr, PGSIZE);
-            ret = page_insert(to, npage, start, perm);
-            assert(ret == 0);
+
+            // [Challenge 1] 修改开始
+            if (share) {
+                // COW 核心逻辑：
+                // 1. page_insert 会自动增加物理页的引用计数 (page->ref)
+                // 2. perm & ~PTE_W 确保子进程映射为只读
+                // 3. 同时也要修改父进程的页表项为只读 (通过重新插入实现)
+                
+                // 映射子进程 (只读)
+                if ((ret = page_insert(to, page, start, perm & ~PTE_W)) != 0) {
+                    return ret;
+                }
+                // 更新父进程 (只读) - 这一步很关键，父子都必须只读
+                if ((ret = page_insert(from, page, start, perm & ~PTE_W)) != 0) {
+                    return ret;
+                }
+            } else {
+                // 原有的深拷贝逻辑 (非 COW)
+                struct Page *npage = alloc_page();
+                assert(npage != NULL);
+                void *src_kvaddr = page2kva(page);
+                void *dst_kvaddr = page2kva(npage);
+                memcpy((void *)dst_kvaddr, (void *)src_kvaddr, PGSIZE);
+                ret = page_insert(to, npage, start, perm);
+                assert(ret == 0);
+            }
+            // [Challenge 1] 修改结束
         }
         start += PGSIZE;
     } while (start != 0 && start < end);
     return 0;
 }
-
 // page_remove - free an Page which is related linear address la and has an
 // validated pte
 void page_remove(pde_t *pgdir, uintptr_t la)

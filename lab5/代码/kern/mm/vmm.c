@@ -7,7 +7,8 @@
 #include <pmm.h>
 #include <riscv.h>
 #include <kmalloc.h>
-
+volatile unsigned int pgfault_num = 0;
+struct mm_struct *check_mm_struct = NULL;
 /*
   vmm design include two parts: mm_struct (mm) & vma_struct (vma)
   mm is the memory manager for the set of continuous virtual memory
@@ -218,7 +219,7 @@ int dup_mmap(struct mm_struct *to, struct mm_struct *from)
 
         insert_vma_struct(to, nvma);
 
-        bool share = 0;
+        bool share = 1;//需要进行共享
         if (copy_range(to->pgdir, from->pgdir, vma->vm_start, vma->vm_end, share) != 0)
         {
             return -E_NO_MEM;
@@ -382,3 +383,115 @@ bool user_mem_check(struct mm_struct *mm, uintptr_t addr, size_t len, bool write
     }
     return KERN_ACCESS(addr, addr + len);
 }
+
+// kern/mm/vmm.c
+
+int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr) {
+    int ret = -E_INVAL;
+    struct vma_struct *vma = find_vma(mm, addr);
+
+    pgfault_num++;
+
+    if (vma == NULL || vma->vm_start > addr) {
+        cprintf("not valid addr %x, and  can not find it in vma\n", addr);
+        goto failed;
+    }
+
+    // 1. 权限检查
+    switch (error_code & 3) {
+    default:
+    case 2: /* write, not present */
+        if (!(vma->vm_flags & VM_WRITE)) {
+            cprintf("do_pgfault failed: write error, addr=%x\n", addr);
+            goto failed;
+        }
+        break;
+    case 1: /* read, present */
+        cprintf("do_pgfault failed: read present error, addr=%x\n", addr);
+        goto failed;
+    case 0: /* read, not present */
+        if (!(vma->vm_flags & (VM_READ | VM_EXEC))) {
+            cprintf("do_pgfault failed: read no-present error, addr=%x\n", addr);
+            goto failed;
+        }
+    }
+
+    uint32_t perm = PTE_U;
+    if (vma->vm_flags & VM_READ) {
+        perm |= PTE_R;
+    }
+    if (vma->vm_flags & VM_WRITE) {
+        perm |= PTE_W;
+    }
+    addr = ROUNDDOWN(addr, PGSIZE);
+    ret = -E_NO_MEM;
+
+    pte_t *ptep = NULL;
+    
+    // 获取页表项
+    if ((ptep = get_pte(mm->pgdir, addr, 1)) == NULL) {
+        cprintf("get_pte in do_pgfault failed\n");
+        goto failed;
+    }
+    
+    // ============ 调试：打印关键信息 ============
+    // 如果你在刷屏时看到这个，说明 PTE 存在，但是 COW 判断条件没通过
+    // cprintf("DEBUG: addr=%x, err=%x, *ptep=%x, PTE_W=%d\n", addr, error_code, *ptep, (*ptep & PTE_W) != 0);
+    // ==========================================
+
+    // Challenge 1: Copy-on-Write 核心处理逻辑
+    // 判断条件：PTE存在(V) 且 是写操作(err&2) 且 当前不可写(!W)
+    if ((*ptep & PTE_V) && (error_code & 2) && !(*ptep & PTE_W)) {
+        
+        // cprintf("COW: Detected COW fault at %x! Duplicating...\n", addr); // 调试信息
+
+        struct Page *page = pte2page(*ptep);
+
+        // 优化：如果引用计数为 1，直接恢复写权限
+        if (page_ref(page) == 1) {
+            page_insert(mm->pgdir, page, addr, perm | PTE_W);
+            return 0;
+        }
+
+        // 分配新页
+        struct Page *npage = alloc_page();
+        if (npage == NULL) {
+            cprintf("alloc_page in do_pgfault failed\n");
+            goto failed;
+        }
+        
+        assert(page != NULL);
+        assert(npage != NULL);
+        
+        // 复制数据
+        void *src_kvaddr = page2kva(page);
+        void *dst_kvaddr = page2kva(npage);
+        memcpy(dst_kvaddr, src_kvaddr, PGSIZE);
+
+        // 建立新映射，并赋予写权限 (perm | PTE_W)
+        if (page_insert(mm->pgdir, npage, addr, perm | PTE_W) != 0) {
+            cprintf("page_insert in do_pgfault failed\n");
+            free_page(npage);
+            goto failed;
+        }
+        
+        return 0; // 成功修复
+    }
+
+    // 普通缺页处理
+    if (*ptep == 0) {
+        if (pgdir_alloc_page(mm->pgdir, addr, perm) == NULL) {
+            cprintf("pgdir_alloc_page in do_pgfault failed\n");
+            goto failed;
+        }
+    } else {
+        // 如果不是 COW，且 PTE 又有值，说明状态异常（Lab5没有Swap）
+        cprintf("do_pgfault error: PTE exists but not COW. addr=%x, *ptep=%x\n", addr, *ptep);
+        goto failed;
+    }
+    
+    ret = 0;
+failed:
+    return ret;
+}
+
