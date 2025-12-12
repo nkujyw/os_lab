@@ -22,6 +22,66 @@ do_execv函数调用load_icode（位于kern/process/proc.c中）来加载并解�
 - 请给出ucore中一个用户态进程的执行状态生命周期图（包执行状态，执行状态之间的变换关系，以及产生变换的事件或函数调用）。（字符方式画即可）
 执行：make grade。如果所显示的应用程序检测都输出ok，则基本正确。（使用的是qemu-1.0.1）
 
+在本实验中，fork/exec/wait/exit 这几个系统调用的共同模式是：用户态通过库函数发起系统调用，利用 ecall 指令触发陷入，CPU 进入内核态后，在 trap 处理函数中根据系统调用号分发到对应的内核实现（sys_fork/sys_exec/sys_wait/sys_exit），这些函数再调用 do_fork/do_execve/do_wait/do_exit 完成实际的进程管理工作，最后由内核修改当前进程的 trapframe（特别是保存返回值的寄存器和返回地址 epc），通过 sret 返回到用户态。从用户程序视角看，它只是调用了一个普通的 C 函数，获得一个返回值；但在这期间，CPU 实际在用户态和内核态之间完成了一次完整的上下文切换和资源操作。以 fork 为例，用户态调用库函数 fork（或者 sys_fork），在 user/libs/syscall.c 中统一通过 syscall() 把系统调用号装入寄存器 a0，参数装入 a1 等，然后执行一条 ecall。这一步是纯用户态的工作。ecall 执行后，硬件把用户态的 pc 保存到 sepc，记录陷入原因到 scause，切到内核栈并跳转到 trap 入口。汇编入口代码把所有通用寄存器保存到当前进程的内核栈上，形成 struct trapframe，然后调用 C 函数 trap(struct trapframe *tf)。在 trap 中，根据 tf->cause 判断是用户态系统调用（CAUSE_USER_ECALL），把 tf->epc 加 4（跳过 ecall 指令本身），再调用 syscall()。syscall() 从 tf->gpr.a0 里取出系统调用号，从 a1~a5 中取出参数，查系统调用表，调到 sys_fork，由它继续调用 do_fork。do_fork 在内核态完成：分配子进程的 proc_struct，分配子进程内核栈，复制或共享父进程的地址空间（创建新的 mm 和页表，复制父进程的页表项和物理页映射），设置父子关系和新的 pid，把子进程插入到全局进程链表和就绪队列中，构造子进程的线程上下文和 trapframe，使得子进程第一次被调度执行时，从 fork 调用之后的用户态指令开始执行，并且在子进程的 trapframe 中将 a0 设为 0。do_fork 自身返回的是子进程 pid，内核把这个返回值写回当前进程的 trapframe 中的 a0。之后 trap 收尾，汇编部分从 trapframe 中恢复寄存器，执行 sret 回到用户态。这样父进程在用户态看到 fork() 返回子进程 pid，而子进程在第一次被调度时，从同一条 fork 调用之后的指令开始执行，看到的返回值为 0。这说明内核态的执行结果是通过修改 trapframe 中寄存器的值（尤其是返回值寄存器和 epc）返回给用户程序的。
+
+exit 的执行流程与之类似，但方向相反。用户态调用 exit(code) 后，通过 ecall 进入内核，进入 sys_exit，再调用 do_exit(code)。在 do_exit 中，首先会防御性地检查不能退出某些特殊进程，随后切换到内核页表，释放当前进程的用户态地址空间，包括销毁 mm、取消页表映射等，然后把当前进程的状态设为 PROC_ZOMBIE，记录退出码 exit_code，必要时调整子进程的父指针（例如交给 init），并唤醒正在等待该进程的父进程。最后调用 schedule() 切换走，do_exit 不再返回到用户态。也就是说，调用 exit 的进程在内核中完成清理之后，其生命周期从运行态转入僵尸态，之后只有父进程通过 wait 调用来回收它，调用 exit 的那一段用户代码不会再继续执行。
+
+wait 的主要作用是让父进程在内核中等待子进程结束并回收子进程资源。用户态调用 wait(&code)，通过 ecall 进入内核，系统调用分发后进入 do_wait(pid, code_store)。在 do_wait 中，内核先利用 user_mem_check 等机制检查 code_store 是否是合法的用户空间地址，然后遍历进程表，寻找以当前进程为父进程的子进程。如果找到一个状态为 PROC_ZOMBIE 的子进程，就把该子进程的 exit_code 写入到用户传入的 code_store 指向的内存中，释放该子进程的内核栈和 PCB，把它从进程链表中移除，最后返回该子进程的 pid。如果发现有子进程存在，但它们尚未退出，则当前进程会把自己的状态设为 PROC_SLEEPING，设置等待原因（例如等待子进程结束），然后调用 schedule() 主动放弃 CPU，直到将来被唤醒。子进程在 do_exit 中设置自身为 PROC_ZOMBIE 后，会调用 wakeup_proc(parent) 唤醒父进程，父进程再次被调度回来继续执行 do_wait 中的循环，直至找到僵尸状态的子进程并完成回收。最后，do_wait 返回子进程 pid，syscall() 将该 pid 写入 trapframe 的 a0，sret 返回用户态，用户进程中的 wait() 函数就以这个值作为返回结果。
+
+exec 是在当前进程内部替换用户态程序的系统调用。用户态调用 exec 后进入内核，经过系统调用分发进入 do_execve(name, len, binary, size)。在 do_execve 中，内核首先检查程序名和参数字符串的用户地址合法性，然后释放当前进程原有的用户地址空间和页表，创建新的 mm，解析 ELF 格式的可执行文件，根据程序头为各个段分配物理页，并建立新的页表映射，拷贝代码和数据段到新地址空间，设置新的用户栈。随后修改当前进程 trapframe 中的 epc 为新程序的入口地址，修改 sp 为新栈顶。形式上，do_execve 返回一个整数值（通常 0 表示成功，负值表示错误），syscall() 仍将其写入 a0，但从本质上，sret 返回用户态时，用户态地址空间和 epc 已经完全切换到新程序，相当于原有的用户程序被新程序取代，后续执行的是新程序的第一条指令，而不是原先调用 exec 的那段代码。这说明在 exec 的情况下，内核通过修改 trapframe 中的 epc、sp 和页表，使得控制流从“旧程序”无缝转到“新程序”。
+
+从宏观上看，内核态与用户态的程序执行是通过 trap 机制交错进行的：用户态顺序执行，遇到系统调用、中断或异常时，硬件和汇编入口负责从用户态切换到内核态，构造 trapframe；内核代码在 trapframe 的基础上检查 cause，执行对应的处理逻辑，可能改变当前进程的状态、页表和 trapframe 内容，也可能调用 schedule() 切换到其他进程；最后某个要继续在用户态执行的进程，其 trapframe 被恢复，内核通过 sret 把控制权交还给用户态。系统调用的返回值、返回地址以及进程状态的变化，都是通过对 trapframe 和 proc_struct 中字段的修改体现出来的。
+
+在进程状态生命周期方面，ucore 使用 enum proc_state 定义了进程的若干状态，包括 PROC_UNINIT（尚未完全初始化的进程）、PROC_RUNNABLE（可被调度执行的进程，包含就绪状态和当前正在运行状态）、PROC_SLEEPING（在内核中因等待某个事件而睡眠）、PROC_ZOMBIE（已经调用了 exit，释放了大部分资源，仅保留退出码等少量信息，等待父进程 wait）。
+
+字符图如下：
+```text
+                       创建与初始化
+        alloc_proc / proc_init / do_fork
+                           |
+                           v
+                     +-------------+
+                     | PROC_UNINIT |
+                     +-------------+
+                           |
+        完成 mm / 页表 / 内核栈 / 上下文 等初始化
+                           |
+                           v
+                     +--------------+
+                     | PROC_RUNNABLE|<-------------------+
+                     +--------------+                    |
+                           |                            |
+             schedule 选中 |                            |
+             → proc_run    |                            |
+                           v                            |
+                      [Running]                         |
+          （可能在用户态，也可能在内核态）             |
+                           |                            |
+      do_sleep / do_wait 等 |                            |
+      阻塞当前进程，调用    |                            |
+      schedule              |                            |
+                           v                            |
+                     +--------------+                   |
+                     | PROC_SLEEPING|------------------+
+                     +--------------+   wakeup_proc /
+                           ^            事件到达等
+                           |
+                           |
+   do_exit（exit 系统调用）
+   在内核中释放资源、记录退出码等
+                           |
+                           v
+                     +--------------+
+                     | PROC_ZOMBIE  |
+                     +--------------+
+                           |
+         父进程在 do_wait 中找到该子进程，
+         读取 exit_code，释放 PCB/内核栈
+                           |
+                           v
+                       （被销毁）
+```
+                  
 
 ## 扩展练习 Challenge
 - 实现 Copy on Write （COW）机制
