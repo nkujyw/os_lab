@@ -213,6 +213,209 @@ make grade结果如下：
 
 这是一个big challenge.
 
+
+
+### 1.实现 Copy on Write （COW）机制
+
+#### 1. 设计概要
+
+Copy-on-Write (COW) 是一种内存管理优化技术。在标准的 `fork` 实现中，内核会立即复制父进程的所有物理内存给子进程（深拷贝），这在子进程创建后立即执行 `exec` 加载新程序的场景下，会造成巨大的资源浪费。
+
+本实验实现的 COW 机制遵循以下核心设计逻辑：
+
+1.  **Fork 时共享映射**：在 `do_fork` 调用 `copy_range` 时，不再申请新物理页进行数据复制，而是只复制页表项（PTE）。
+2.  **设置只读权限**：将父进程和子进程页表项中的物理页都映射为 **只读（Read-Only）**，即清除 `PTE_W` 位。同时增加物理页的引用计数。
+3.  **捕获写异常**：当父进程或子进程尝试写入这些共享页面时，由于页表权限为只读，CPU 会触发 `Store Page Fault` 异常。
+4.  **按需复制（缺页处理）**：内核在 `do_pgfault` 中捕获该异常，检测到这是 COW 页面（PTE有效、写操作、当前不可写），则为当前进程分配一个新的物理页，将原页面的数据复制过去，并将页表项更新为指向新页且 **可写（Writable）**，从而实现“写时复制”。
+
+#### 2. 状态转换说明 (有限状态机)
+
+对于一个物理页 `P`，其在 COW 机制下的状态转换如下：
+
+* **初始状态 (Private, Writable)**：
+    * 进程 A 独占页面 P，物理页引用计数 `ref=1`，页表权限为 `R+W`。
+
+* **事件：Fork (创建子进程 B)**：
+    * **状态迁移至 -> 共享状态 (Shared, Read-Only)**。
+    * 操作：`P` 的引用计数变为 `ref=2`。进程 A 和 B 的页表项均指向 P，且均清除 `PTE_W` 权限，刷新 TLB。
+
+* **事件：进程 A 尝试写入 (触发 Page Fault)**：
+    * **情况 1：引用计数 `ref > 1` (仍有共享)**：
+        * 操作：内核分配新页面 `P'`。将 `P` 内容拷贝到 `P'`。
+        * A 的页表项指向 `P'`，权限设为 `R+W`。
+        * `P` 的引用计数减 1。
+        * **A 迁移至 -> 私有状态 (Private, Writable)** (指向新页)。
+        * **B 维持 -> 共享状态 (Shared, Read-Only)** (指向旧页，但 Ref 减少)。
+    * **情况 2：引用计数 `ref == 1` (仅剩自己)**：
+        * 操作：说明其他共享进程已退出或已发生拷贝分离。
+        * 无需复制，直接将当前页表项的权限恢复为 `R+W`。
+        * **状态迁移至 -> 私有状态 (Private, Writable)**。
+
+#### 3. 实现源码
+
+##### 3.1 修改 `kern/mm/pmm.c` 中的 `copy_range`
+修改内存复制逻辑，当 `share` 标志为 1 时，执行只读共享映射而非深拷贝。
+
+```c
+int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share) {
+    // ... (前略)
+    if (*ptep & PTE_V) {
+        // ...
+        if (share) {
+            // [Challenge 1] COW 核心逻辑
+            // 1. 映射子进程：引用同一个物理页，perm 去掉 PTE_W，page_insert 自动增加引用计数
+            if ((ret = page_insert(to, page, start, perm & ~PTE_W)) != 0) {
+                return ret;
+            }
+            // 2. 更新父进程：父进程的 PTE 也必须去掉 PTE_W，否则父进程写入时无法触发异常
+            if ((ret = page_insert(from, page, start, perm & ~PTE_W)) != 0) {
+                return ret;
+            }
+        } else {
+            // 原有的深拷贝逻辑
+            struct Page *npage = alloc_page();
+            // ... memcpy ...
+            ret = page_insert(to, npage, start, perm);
+        }
+    }
+    // ... (后略)
+}
+````
+
+##### 3.2 修改 `kern/mm/vmm.c` 中的 `dup_mmap`
+
+将 `share` 变量设置为 1，启用共享机制。
+
+```c
+int dup_mmap(struct mm_struct *to, struct mm_struct *from) {
+    // ...
+    bool share = 1; // [Challenge 1] 开启 COW
+    if (copy_range(to->pgdir, from->pgdir, vma->vm_start, vma->vm_end, share) != 0) {
+        return -E_NO_MEM;
+    }
+    return 0;
+}
+```
+
+##### 3.3 修改 `kern/mm/vmm.c` 中的 `do_pgfault`
+
+这是 COW 的核心处理逻辑，用于响应写只读页异常。
+
+```c
+int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr) {
+    // ... (前置检查) ...
+    
+    // [Challenge 1] COW 异常处理
+    // 条件：PTE存在 且 是写操作 且 当前不可写
+    if ((*ptep & PTE_V) && (error_code & 2) && !(*ptep & PTE_W)) {
+        struct Page *page = pte2page(*ptep);
+
+        // 优化：如果引用计数为 1，说明没有其他进程共享此页了
+        // 直接恢复写权限即可，不需要复制
+        if (page_ref(page) == 1) {
+            page_insert(mm->pgdir, page, addr, perm | PTE_W);
+            return 0;
+        }
+
+        // 标准流程：分配新页 -> 复制数据 -> 建立新映射
+        struct Page *npage = alloc_page();
+        if (npage == NULL) goto failed;
+        
+        void *src_kvaddr = page2kva(page);
+        void *dst_kvaddr = page2kva(npage);
+        memcpy(dst_kvaddr, src_kvaddr, PGSIZE);
+
+        // 建立新映射并赋予写权限
+        // page_insert 内部会自动减少原 page 的引用计数
+        if (page_insert(mm->pgdir, npage, addr, perm | PTE_W) != 0) {
+            free_page(npage);
+            goto failed;
+        }
+        return 0; // 处理成功
+    }
+    
+    // ... (原有的普通缺页处理) ...
+}
+```
+
+##### 3.4 修改 `kern/trap/trap.c`
+
+确保 `CAUSE_STORE_PAGE_FAULT` 被正确转发给 `pgfault_handler` 处理，而不是直接忽略。
+
+```c
+    case CAUSE_STORE_PAGE_FAULT:
+        if ((ret = pgfault_handler(tf)) != 0) {
+            print_trapframe(tf);
+            panic("handle pgfault failed. %e\n", ret);
+        }
+        break;
+```
+
+#### 4\. 测试用例 (`user/cow.c`)
+
+为了验证 COW 机制，编写了如下用户程序。逻辑是父进程创建子进程，子进程修改共享的全局变量。如果 COW 正常工作，父进程读取到的变量值应保持不变（因为子进程修改的是副本）。
+
+```c
+#include <stdio.h>
+#include <ulib.h>
+
+int global_var = 100;
+
+int main(void) {
+    int pid;
+    int local_var = 200;
+    cprintf("COW Test: Parent process starting...\n");
+    cprintf("Before fork: global_var = %d, local_var = %d\n", global_var, local_var);
+
+    pid = fork();
+    if (pid == 0) {
+        // === 子进程 ===
+        cprintf("I am CHILD. Reading values (should be same)...\n");
+        // 触发写操作，内核应在此处捕获异常并复制页面
+        cprintf("CHILD: Modifying variables (Triggering COW)...\n");
+        global_var = 300;
+        local_var = 400;
+        cprintf("CHILD: After modification: global_var = %d, local_var = %d\n", global_var, local_var);
+        exit(0);
+    } else {
+        // === 父进程 ===
+        int exit_code;
+        waitpid(pid, &exit_code);
+        cprintf("I am PARENT. Child finished.\n");
+        // 验证父进程内存未被污染
+        if (global_var == 100 && local_var == 200) {
+            cprintf("SUCCESS: Parent's variables remain unchanged.\n");
+        } else {
+            cprintf("FAILURE: Parent's variables were modified! COW failed.\n");
+        }
+    }
+    return 0;
+}
+```
+
+#### 5\. 运行结果
+
+运行 `make qemu` 执行上述测试程序，结果如下：
+
+![make qemu](image.png)
+
+从输出可以看出：
+
+1.  子进程成功修改了变量值（`300`, `400`），说明写异常被正确捕获并处理，分配了可写的副本页面。
+2.  父进程读取到的变量值依然是初始值（`100`, `200`），打印了 **SUCCESS**。这证明父进程的内存空间未受子进程写入的影响，COW 机制运行正确。
+3.  系统最终触发 `initproc exit` panic，说明所有用户进程资源回收正常，无内存泄漏。
+
+#### 6\. 关于 Dirty COW (CVE-2016-5195)
+
+Dirty COW 是 Linux 内核中一个著名的竞态条件漏洞，主要涉及到 COW 过程中“解除写保护”和“实际写入”之间的时序问题。
+
+  * **原理**：在 COW 过程中，内核通常需要完成：(1) 验证权限并分配新页，(2) 更新页表映射。在多线程环境下，如果在步骤 (1) 完成后、步骤 (2) 之前，另一个线程通过 `madvise(MADV_DONTNEED)` 告诉内核“我不需要这个页面了”，内核可能会丢弃刚分配的私有页。这导致随后的写入操作落回到了原始的（本该只读的）共享文件映射上，从而修改了只读文件（如 `/etc/passwd`）。
+  * **uCore 中的模拟情况**：
+    在当前的 uCore Lab5 实验环境中，由于我们使用的是 **单核 CPU** 且内核配置为 **非抢占式（Non-preemptive）**，很难直接复现 Dirty COW 这种竞态条件。
+    在 `do_pgfault` 函数中，从 `alloc_page` 到 `page_insert` 的过程是原子的（因为不会发生线程切换或中断打断内核逻辑），因此不会出现另一个线程在中间插入操作去修改映射关系的情况。若要在 uCore 中模拟，需要引入多核支持（SMP）或允许内核级抢占，并在 `do_pgfault` 的复制逻辑中间插入人为的延时，同时运行另一个恶意线程不断尝试修改内存映射。
+
+
+
 ### 2.说明该用户程序是何时被预先加载到内存中的？与我们常用操作系统的加载有何区别，原因是什么？
 
 #### ucore加载方式
