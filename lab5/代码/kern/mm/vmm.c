@@ -384,20 +384,19 @@ bool user_mem_check(struct mm_struct *mm, uintptr_t addr, size_t len, bool write
     return KERN_ACCESS(addr, addr + len);
 }
 
-// kern/mm/vmm.c
 
 int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr) {
     int ret = -E_INVAL;
     struct vma_struct *vma = find_vma(mm, addr);
 
     pgfault_num++;
-
+    // 1. 查找 VMA (Virtual Memory Area)是否合规
     if (vma == NULL || vma->vm_start > addr) {
         cprintf("not valid addr %x, and  can not find it in vma\n", addr);
         goto failed;
     }
 
-    // 1. 权限检查
+    // 1. 权限检查，COW只处理写只读页
     switch (error_code & 3) {
     default:
     case 2: /* write, not present */
@@ -433,17 +432,12 @@ int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr) {
         cprintf("get_pte in do_pgfault failed\n");
         goto failed;
     }
-    
-    // ============ 调试：打印关键信息 ============
-    // 如果你在刷屏时看到这个，说明 PTE 存在，但是 COW 判断条件没通过
-    // cprintf("DEBUG: addr=%x, err=%x, *ptep=%x, PTE_W=%d\n", addr, error_code, *ptep, (*ptep & PTE_W) != 0);
-    // ==========================================
+
 
     // Challenge 1: Copy-on-Write 核心处理逻辑
     // 判断条件：PTE存在(V) 且 是写操作(err&2) 且 当前不可写(!W)
     if ((*ptep & PTE_V) && (error_code & 2) && !(*ptep & PTE_W)) {
         
-        // cprintf("COW: Detected COW fault at %x! Duplicating...\n", addr); // 调试信息
 
         struct Page *page = pte2page(*ptep);
 

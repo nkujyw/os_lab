@@ -133,7 +133,7 @@ void interrupt_handler(struct trapframe *tf)
         if (ticks % TICK_NUM == 0) {
             // print_ticks(); // 可选：打印一下 tick 信息，证明还活着
             assert(current != NULL);
-            current->need_resched = 1; // 标记当前进程需要被抢占
+            current->need_resched = 1; // 标记当前进程需要被调度
         }
         break;
 
@@ -163,7 +163,7 @@ void interrupt_handler(struct trapframe *tf)
 }
 void kernel_execve_ret(struct trapframe *tf, uintptr_t kstacktop);
 
-// 插入在 exception_handler 之前
+
 static int pgfault_handler(struct trapframe *tf) {
     extern struct mm_struct *check_mm_struct;
     struct mm_struct *mm;
@@ -182,7 +182,6 @@ static int pgfault_handler(struct trapframe *tf) {
     }
     
     // 调用 vmm.c 中的 do_pgfault
-    // tf->cause 是错误码（读/写），tf->tval 是出错的虚拟地址
     return do_pgfault(mm, tf->cause, tf->tval);
 }
 
@@ -221,7 +220,7 @@ void exception_handler(struct trapframe *tf)
     case CAUSE_STORE_ACCESS:
         //cprintf("Store/AMO access fault\n");
         break;
-    case CAUSE_USER_ECALL:
+    case CAUSE_USER_ECALL://处理来自用户态的系统调用
         // cprintf("Environment call from U-mode\n");
         tf->epc += 4;
         syscall();
@@ -243,13 +242,12 @@ void exception_handler(struct trapframe *tf)
     case CAUSE_LOAD_PAGE_FAULT:
         cprintf("Load page fault\n");
         break;
-    case CAUSE_STORE_PAGE_FAULT:
+    case CAUSE_STORE_PAGE_FAULT://处理写时复制
         //cprintf("Store/AMO page fault\n");
         if ((ret = pgfault_handler(tf)) != 0) {
             print_trapframe(tf);
             panic("handle pgfault failed. %e\n", ret);
         }
-        break;
         break;
     default:
         print_trapframe(tf);

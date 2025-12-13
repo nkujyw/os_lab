@@ -17,7 +17,7 @@ int main(void) {
         cprintf("I am CHILD. Reading values (should be same)...\n");
         cprintf("CHILD: global_var = %d, local_var = %d\n", global_var, local_var);
         
-        // 关键点：这里进行写入操作！
+        //这里进行写入操作！
         // 如果 COW 正常，此时 CPU 会触发 Page Fault，内核分配新物理页
         cprintf("CHILD: Modifying variables (Triggering COW)...\n");
         global_var = 300;
@@ -32,7 +32,7 @@ int main(void) {
         
         cprintf("I am PARENT. Child finished.\n");
         
-        // 关键点：检查父进程的值是否被修改
+        //检查父进程的值是否被修改
         // 如果 COW 正常，父进程的值应该保持不变（因为子进程改的是副本）
         if (global_var == 100 && local_var == 200) {
             cprintf("SUCCESS: Parent's variables remain unchanged.\n");

@@ -1,4 +1,4 @@
-<img width="1002" height="428" alt="Pasted image 20251212214731" src="https://github.com/user-attachments/assets/1a71cd5e-4172-4894-bfd1-659873e51f8a" /># 用户程序实验报告
+# 用户程序实验报告
 ## 练习1: 加载应用程序并执行（需要编码）
 do_execv函数调用load_icode（位于kern/process/proc.c中）来加载并解析一个处于内存中的ELF执行文件格式的应用程序。你需要补充load_icode的第6步，建立相应的用户内存空间来放置应用程序的代码段、数据段等，且要设置好proc_struct结构中的成员变量trapframe中的内容，确保在执行此进程后，能够从应用程序设定的起始执行地址开始执行。需设置正确的trapframe内容。
 

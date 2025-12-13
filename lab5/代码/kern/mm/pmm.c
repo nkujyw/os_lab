@@ -373,7 +373,7 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end)
  *
  * CALL GRAPH: copy_mm-->dup_mmap-->copy_range
  */
-// 文件：kern/mm/pmm.c
+
 
 int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share) {
     assert(start % PGSIZE == 0 && end % PGSIZE == 0);
@@ -397,8 +397,8 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool shar
             if (share) {
                 // COW 核心逻辑：
                 // 1. page_insert 会自动增加物理页的引用计数 (page->ref)
-                // 2. perm & ~PTE_W 确保子进程映射为只读
-                // 3. 同时也要修改父进程的页表项为只读 (通过重新插入实现)
+                // 2. perm & ~PTE_W 确保子进程映射为只读，
+                // 3. 同时也要修改父进程的页表项为只读 (通过重新插入实现)，PTE_W 为0
                 
                 // 映射子进程 (只读)
                 if ((ret = page_insert(to, page, start, perm & ~PTE_W)) != 0) {
