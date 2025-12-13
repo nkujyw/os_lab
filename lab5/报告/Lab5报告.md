@@ -1,4 +1,4 @@
-# 用户程序实验报告
+<img width="1002" height="428" alt="Pasted image 20251212214731" src="https://github.com/user-attachments/assets/1a71cd5e-4172-4894-bfd1-659873e51f8a" /># 用户程序实验报告
 ## 练习1: 加载应用程序并执行（需要编码）
 do_execv函数调用load_icode（位于kern/process/proc.c中）来加载并解析一个处于内存中的ELF执行文件格式的应用程序。你需要补充load_icode的第6步，建立相应的用户内存空间来放置应用程序的代码段、数据段等，且要设置好proc_struct结构中的成员变量trapframe中的内容，确保在执行此进程后，能够从应用程序设定的起始执行地址开始执行。需设置正确的trapframe内容。
 
@@ -479,7 +479,8 @@ handle SIGPIPE nostop noprint
 ```
 分别完成启动后GDB、在GDB中附加QEMU、处理 SIGPIPE
 
-![[Pasted image 20251213000100.png]]
+<img width="1179" height="789" alt="Pasted image 20251213000100" src="https://github.com/user-attachments/assets/14b72e70-8be7-4b43-86ac-93e4afe4c508" />
+
 
 最后一条指令我询问大模型知道：QEMU 内部大量使用 pipe 或 socket，正常运行中会频繁收到 `SIGPIPE`，但 GDB 默认行为是： 收到信号 → 停下来 → 打断调试
 
@@ -496,26 +497,25 @@ handle SIGPIPE nostop noprint
 
 回到正题，切换到终端3，执行`make gdb`,此时GDB 连接的是 **uCore 内核**
 
-![[Pasted image 20251212171005.png]]
+<img width="930" height="438" alt="Pasted image 20251212171005" src="https://github.com/user-attachments/assets/03c524c9-42d7-44df-a40a-9d83c8829e48" />
 
 因为我要调的是用户态 `user/libs/syscall.c`，所以在终端3的 gdb 输入
 `add-symbol-file obj/__user_exit.out`加载用户程序符号表
 然后在用户态 syscall 函数处下断点
 
 `break user/libs/syscall.c:18`，然后单步到 `ecall` 指令前
+<img width="786" height="318" alt="Pasted image 20251212171120" src="https://github.com/user-attachments/assets/d43fa057-564f-43b1-9d1d-91feb719a662" />
 
-![[Pasted image 20251212171120.png]]
 这里我`si`结果一直显示asm volatile，我还以为是gdb出bug了，直到我执行到__alltraps函数才知道执行过头了。问大模型知道，这是因为`SAVE_ALL` 不是一条指令，而是一个宏，调试信息把多条指令都映射回这个宏。
 从图中能够看到， PC 每次都在变，说明在**正常顺序执行**。
-![[Pasted image 20251212172111.png]]
+<img width="759" height="501" alt="Pasted image 20251212172111" src="https://github.com/user-attachments/assets/c3dc9e49-fdc1-4420-b2df-56102ae79c58" />
 
 我只好重新重复一遍上述流程，第二次我首先输入`x/7i $pc`显示当前 PC 附近的汇编指令，可以看到ecall指令
-
-![[Pasted image 20251212213612.png]]
+<img width="885" height="312" alt="Pasted image 20251212213612" src="https://github.com/user-attachments/assets/245b3a9b-03ef-4ab8-aa2b-03b14de28230" />
 
 然后我单步`si`直到PC正好指向`ecall`
+<img width="852" height="534" alt="Pasted image 20251212213702" src="https://github.com/user-attachments/assets/b607b00a-20bf-4050-918c-018a90425d04" />
 
-![[Pasted image 20251212213702.png]]
 询问大模型可知，此时uCore 停在 ecall 前，下一步执行 ecall 会触发 QEMU 的异常/陷入路径。  我们要做的是：**让 QEMU 在处理 ecall 的关键位置停下**。
 
 因此需要切换到终端2，它此时在运行状态按：`Ctrl + C`让它回到 `(gdb)` 提示符，然后在终端2 gdb 里先设置源码目录`directory /home/liuchengrui/qemu-4.1.1`，再用 `rbreak` 模糊下断点：
@@ -531,11 +531,12 @@ rbreak .*trap.*
 
 这一步执行之后，在 uCore 侧：执行 ecall，进入内核 trap 入口；在 QEMU 侧：触发我刚下的断点
 可以看到，断点成功命中，我不太理解红框中的含义，同样问大模型知晓：原来是QEMU 在 `trans_ecall()` 中识别该指令，QEMU 通过 `generate_exception(... U_ECALL)` 将控制权转交给内核
-![[Pasted image 20251212214641.png]]
+<img width="1191" height="348" alt="Pasted image 20251212214641" src="https://github.com/user-attachments/assets/4c5d22d8-99a6-473d-ac07-4b7f4d29f2f0" />
 然后我输入`bt`查看调用栈
-![[Pasted image 20251212214637.png]]
 
-![[Pasted image 20251212215022.png]]
+<img width="1113" height="582" alt="Pasted image 20251212214637" src="https://github.com/user-attachments/assets/62f10d4a-e9ae-47ca-8679-70a98f5af505" />
+
+<img width="1158" height="165" alt="Pasted image 20251212215022" src="https://github.com/user-attachments/assets/3532fa85-5816-45ca-b0cb-79c337be2272" />
 
 QEMU 分为两个阶段： 翻译阶段和 执行阶段。
 
@@ -564,16 +565,16 @@ QEMU 在 `cpu_exec()` 中发现当前 PC 没有可用 TB
 
 输入`frame 0 `和`list`查看源码
 
-![[Pasted image 20251212214731.png]]
+<img width="1002" height="428" alt="Pasted image 20251212214731" src="https://github.com/user-attachments/assets/30504b28-ab2a-4977-9f92-a95c1f90bbe8" />
 
 在QEMU gdb 里，我继续下断点`b riscv_cpu_do_interrupt
 ，然后`continue`
 
 断点命中，刚才在 `trans_ecall` 里“生成”的 U_ECALL 异常， 现在真的被触发并开始处理了。
 
-![[Pasted image 20251212215504.png]]
+<img width="1239" height="345" alt="Pasted image 20251212215504" src="https://github.com/user-attachments/assets/ce5a702d-5410-4029-a628-8a5ba613fe0f" />
 
-![[Pasted image 20251212220151.png]]
+<img width="1002" height="423" alt="Pasted image 20251212220151" src="https://github.com/user-attachments/assets/4b8d9312-7077-4acd-86be-bb0f57a059c2" />
 
 接下来输入`step` / `next`我会看到：
 - `cs->exception_index`
@@ -619,13 +620,15 @@ TCG 代码执行
 
 	这个地址，**就是 uCore 的 trap_entry.S**
 
-![[Pasted image 20251212220617.png]]
+<img width="462" height="155" alt="Pasted image 20251212220617" src="https://github.com/user-attachments/assets/df8025f2-e7c0-4758-9463-69366bc37878" />
+
 结果出现的结果异常奇怪，`epc` / `stvec` 数值为什么这么大？
 我直觉觉得不太合理。我问大模型，它告诉我：
 
 在QEMU 的 RISC-V 定义里：`RISCV_EXCP_U_ECALL = 8`。也就是说：**当前异常类型 = 用户态 ECALL**。其次， **GDB 默认用十进制打印 64 位地址**。因此我需要改成十六进制看：
 
-![[Pasted image 20251212220848.png]]
+<img width="420" height="156" alt="Pasted image 20251212220848" src="https://github.com/user-attachments/assets/49bf8dcb-b6f0-467b-a6d4-ff39f5ddf613" />
+
 但是还是很奇怪，我又问它，他告诉我：现在看到的 `sepc / stvec` **还不是“最终意义上的 RISC-V 虚拟地址”**，  而是 **QEMU 在 TCG 执行期内部使用的“带标签的 PC 表示”**。
 
 
@@ -638,32 +641,37 @@ b trap
 b exception_handler
 b syscall
 ```
-![[Pasted image 20251212215618.png]]
+<img width="879" height="195" alt="Pasted image 20251212215618" src="https://github.com/user-attachments/assets/4cdf83a5-058e-4fb4-b7da-72d7eb50d04b" />
+
+
 然后`continue`
-![[Pasted image 20251212221908.png]]
+<img width="921" height="159" alt="Pasted image 20251212221908" src="https://github.com/user-attachments/assets/43d78525-61d5-4744-bd3f-faeb5ba34546" />
+
 可以看到，我已经成功进入到内核的 `trap()` 里。下一步，我想了解sret指令是如何被qemu处理的
 
 我输入`b __trapet`和`continue`
-![[Pasted image 20251212223444.png]]
+<img width="1074" height="450" alt="Pasted image 20251212223444" src="https://github.com/user-attachments/assets/ed0872cb-1399-4842-8052-e2f9a2898e75" />
+
 结果很奇怪，它一直弹出`Ignoring packet error,continuing...`
 
 大模型告诉我，不是我 `__trapret` 下错断点，也不是 sret 有问题。这是 **GDB 远程协议在 sret（特权返回、跨地址空间）瞬间失步** 导致的通信异常。
-
-![[Pasted image 20251212223933.png]]
+<img width="1149" height="603" alt="Pasted image 20251212223933" src="https://github.com/user-attachments/assets/fc8ccae5-1f8d-4f38-b179-6b19d8000092" />
 
 emm听起来有一点晦涩。我让他详细解释一下，得出了以下结论：
 
-在系统调用返回阶段，uCore 通过 `trapentry.S` 中的 `sret` 指令完成从  S-mode 到 U-mode 的特权级切换。在 QEMU + TCG 的远程调试环境下，  由于 `sret` 会引起 PC 与特权级的瞬时切换，GDB 在该位置可能出现  远程协议通信异常（packet error）。该现象不影响内核逻辑执行，  
-且不代表系统调用返回失败。
+在系统调用返回阶段，uCore 通过 `trapentry.S` 中的 `sret` 指令完成从  S-mode 到 U-mode 的特权级切换。在 QEMU + TCG 的远程调试环境下，  由于 `sret` 会引起 PC 与特权级的瞬时切换，GDB 在该位置可能出现  远程协议通信异常（packet error）。该现象不影响内核逻辑执行，且不代表系统调用返回失败。
 
-![[Pasted image 20251212224225.png]]
+<img width="465" height="144" alt="Pasted image 20251212224225" src="https://github.com/user-attachments/assets/7ab29ff3-0432-4e0d-8467-70e6ef48ced6" />
+
 
 我只好再重启一遍，这一次直接步入正题，在Qemu侧，我输入`b trans_sret`，然后continue，在ucore侧我一上来先打断点`b __trapret`。其实我还尝试了`b sret`，不过由于它不是符号，所以很显然行不通。
-![[Pasted image 20251212225205.png]]
+<img width="924" height="638" alt="Pasted image 20251212225205" src="https://github.com/user-attachments/assets/6f8ed7d6-9f7c-4919-bfbc-8da1f85c3f87" />
+
 又是同样的多次的`si` ，我总算来到`sret`指令
-![[Pasted image 20251212225730.png]]
+<img width="927" height="281" alt="Pasted image 20251212225730" src="https://github.com/user-attachments/assets/d1c3a9be-8b15-4d14-8582-0896705a8288" />
+
 接着`continue`
-![[Pasted image 20251212233926.png]]
+<img width="1131" height="210" alt="Pasted image 20251212233926" src="https://github.com/user-attachments/assets/d6074809-4cd0-479e-8145-1160766fb94e" />
 
 可以看到，我命中了断点，**QEMU 正在通过trans_sret翻译 RISC-V 的 `sret` 指令**
 
@@ -676,20 +684,21 @@ emm听起来有一点晦涩。我让他详细解释一下，得出了以下结�
 而我现在看到的是，**QEMU 正在用 TCG，把这些“硬件语义”翻译成软件可执行的操作**
 
 然后我输入`bt`查看调用栈：
-![[Pasted image 20251212233958.png]]
+<img width="1178" height="726" alt="Pasted image 20251212233958" src="https://github.com/user-attachments/assets/38a81fb3-06f3-4256-b1a5-943676be6fd1" />
+
 
 当内核执行 `sret` 指令时，QEMU 在翻译阶段通过 `decode_insn32 → decode_opc → trans_sret` 识别并处理该指令，随后生成对应的 TCG 中间代码并结束当前 Translation Block。
 
 然后输入`list`查看trans_sret的qemu源码
+<img width="879" height="318" alt="Pasted image 20251212234031" src="https://github.com/user-attachments/assets/d6eeaa48-2f20-4509-b451-244212077279" />
 
-![[Pasted image 20251212234031.png]]
 它首先设置返回后的 PC，然后调用 helper 函数来完成异常返回相关的处理逻辑，包括特权级切换和状态寄存器更新，并通过 `exit_tb` 结束当前 Translation Block，确保控制流正确切换。
 然后我按下多次`step`
-![[Pasted image 20251213120817.png]]
+<img width="1098" height="417" alt="Pasted image 20251213120817" src="https://github.com/user-attachments/assets/40bd61d4-aafa-496d-ac7c-7a6d57695497" />
+
 此时我已经进入了 **TCG 内部的指令生成工具函数**，现在看到的是QEMU 如何在生成中间代码时，往 IR 里塞一条指令
 
 然后我`continue`，让 QEMU 把 sret 翻译和执行完成，回到 uCore。
-
-![[Pasted image 20251213123449.png]]
+<img width="906" height="108" alt="Pasted image 20251213123449" src="https://github.com/user-attachments/assets/62c1d873-5a5b-4087-9504-0522df7711c5" />
 
 我们的gdp调试部分到此结束！
