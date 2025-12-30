@@ -585,22 +585,51 @@ sfs_io_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, void *buf, off_t offset
 
     int ret = 0;
     size_t size, alen = 0;
-    uint32_t ino;
-    uint32_t blkno = offset / SFS_BLKSIZE;          // The NO. of Rd/Wr begin block
-    uint32_t nblks = endpos / SFS_BLKSIZE - blkno;  // The size of Rd/Wr blocks
+    uint32_t ino, blkno;
+    char *data = (char *)buf;
+    off_t pos = offset;
 
-  //LAB8:EXERCISE1 YOUR CODE HINT: call sfs_bmap_load_nolock, sfs_rbuf, sfs_rblock,etc. read different kind of blocks in file
-	/*
-	 * (1) If offset isn't aligned with the first block, Rd/Wr some content from offset to the end of the first block
-	 *       NOTICE: useful function: sfs_bmap_load_nolock, sfs_buf_op
+  //LAB8:EXERCISE1 2312478 HINT: call sfs_bmap_load_nolock, sfs_rbuf, sfs_rblock,etc. read different kind of blocks in file
+		/*
+		 * (1) If offset isn't aligned with the first block, Rd/Wr some content from offset to the end of the first block
+		 *       NOTICE: useful function: sfs_bmap_load_nolock, sfs_buf_op
 	 *               Rd/Wr size = (nblks != 0) ? (SFS_BLKSIZE - blkoff) : (endpos - offset)
 	 * (2) Rd/Wr aligned blocks 
 	 *       NOTICE: useful function: sfs_bmap_load_nolock, sfs_block_op
-     * (3) If end position isn't aligned with the last block, Rd/Wr some content from begin to the (endpos % SFS_BLKSIZE) of the last block
-	 *       NOTICE: useful function: sfs_bmap_load_nolock, sfs_buf_op	
-	*/
+		 * (3) If end position isn't aligned with the last block, Rd/Wr some content from begin to the (endpos % SFS_BLKSIZE) of the last block
+		 *       NOTICE: useful function: sfs_bmap_load_nolock, sfs_buf_op	
+		*/
+    while (pos < endpos)
+    {
+        blkno = pos / SFS_BLKSIZE;
+        blkoff = pos % SFS_BLKSIZE;
+        size = SFS_BLKSIZE - blkoff;
+        if (size > endpos - pos)
+        {
+            size = endpos - pos;
+        }
 
-    
+        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, &ino)) != 0)
+        {
+            goto out;
+        }
+
+        if (size == SFS_BLKSIZE)
+        {
+            ret = sfs_block_op(sfs, data, ino, 1);
+        }
+        else
+        {
+            ret = sfs_buf_op(sfs, data, size, ino, blkoff);
+        }
+        if (ret != 0)
+        {
+            goto out;
+        }
+        pos += size;
+        data += size;
+        alen += size;
+    }
 
 out:
     *alenp = alen;
@@ -987,4 +1016,3 @@ static const struct inode_ops sfs_node_fileops = {
     .vop_tryseek                    = sfs_tryseek,
     .vop_truncate                   = sfs_truncfile,
 };
-

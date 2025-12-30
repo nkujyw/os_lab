@@ -202,7 +202,7 @@ void exception_handler(struct trapframe *tf)
         cprintf("Load page fault\n");
         break;
     case CAUSE_STORE_PAGE_FAULT:
-        cprintf("Store/AMO page fault\n");
+        cprintf("Store/AMO page fault: stval=%p sepc=%p sp=%p\n", tf->tval, tf->epc, tf->gpr.sp);
         break;
     default:
         print_trapframe(tf);
