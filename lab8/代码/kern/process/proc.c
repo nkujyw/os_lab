@@ -727,22 +727,25 @@ load_icode(int fd, int argc, char **kargv)
      * (7) setup trapframe for user environment
      * (8) if up steps failed, you should cleanup the env.
      */
+    // 当前进程必须还没有用户地址空间
     if (current->mm != NULL)
     {
         panic("load_icode: current->mm must be empty.\n");
     }
 
     int ret = -E_NO_MEM;
+    // (1) 创建新的 mm_struct
     struct mm_struct *mm;
     if ((mm = mm_create()) == NULL)
     {
         goto bad_mm;
     }
+    // (2) 建立新的页目录
     if ((ret = setup_pgdir(mm)) != 0)
     {
         goto bad_pgdir_cleanup_mm;
     }
-
+    //  (3.1) 读取 ELF 头并校验
     struct elfhdr elf;
     if ((ret = load_icode_read(fd, &elf, sizeof(struct elfhdr), 0)) != 0)
     {
@@ -753,7 +756,7 @@ load_icode(int fd, int argc, char **kargv)
         ret = -E_INVAL_ELF;
         goto bad_elf_cleanup_pgdir;
     }
-
+    // (3.2) 读取所有程序头
     struct proghdr *ph = NULL, *ph_end;
     if ((ph = kmalloc(sizeof(struct proghdr) * elf.e_phnum)) == NULL)
     {
@@ -768,6 +771,7 @@ load_icode(int fd, int argc, char **kargv)
     uint32_t vm_flags, perm;
     size_t off, size;
     ph_end = ph + elf.e_phnum;
+    // (3.3~3.5) 加载所有 PT_LOAD 段（TEXT / DATA / BSS）
     for (struct proghdr *p = ph; p < ph_end; p++)
     {
         if (p->p_type != ELF_PT_LOAD)
@@ -779,6 +783,7 @@ load_icode(int fd, int argc, char **kargv)
             ret = -E_INVAL_ELF;
             goto bad_cleanup_mmap;
         }
+        // 根据 ELF 标志生成 VMA 权限
         vm_flags = 0, perm = PTE_U | PTE_V;
         if (p->p_flags & ELF_PF_X)
             vm_flags |= VM_EXEC;
@@ -792,11 +797,12 @@ load_icode(int fd, int argc, char **kargv)
             perm |= (PTE_W | PTE_R);
         if (vm_flags & VM_EXEC)
             perm |= PTE_X;
+        // 建立虚拟内存映射
         if ((ret = mm_map(mm, p->p_va, p->p_memsz, vm_flags, NULL)) != 0)
         {
             goto bad_cleanup_mmap;
         }
-
+        // 拷贝文件内容（TEXT / DATA）
         uintptr_t start = p->p_va, end, la = ROUNDDOWN(start, PGSIZE);
         ret = -E_NO_MEM;
 
@@ -818,7 +824,7 @@ load_icode(int fd, int argc, char **kargv)
             }
             start += size;
         }
-
+        // 清零 BSS 段
         end = p->p_va + p->p_memsz;
         if (start < la)
         {
@@ -850,7 +856,7 @@ load_icode(int fd, int argc, char **kargv)
             start += size;
         }
     }
-
+    // (4) 建立用户栈 VMA 并分配物理页
     vm_flags = VM_READ | VM_WRITE | VM_STACK;
     if ((ret = mm_map(mm, USTACKTOP - USTACKSIZE, USTACKSIZE, vm_flags, NULL)) != 0)
     {
@@ -861,11 +867,11 @@ load_icode(int fd, int argc, char **kargv)
     {
         assert(pgdir_alloc_page(mm->pgdir, USTACKTOP - (i + 1) * PGSIZE, PTE_USER) != NULL);
     }
-
+    // (5) 切换到新页表
     bool satp_switched = 0;
     lsatp(PADDR(mm->pgdir));
     satp_switched = 1;
-
+    // (6) 在用户栈中布置 argv
     uintptr_t *argv_store = NULL;
     uintptr_t stacktop = USTACKTOP;
     if (argc > 0)
@@ -900,12 +906,12 @@ load_icode(int fd, int argc, char **kargv)
     {
         stacktop = USTACKTOP;
     }
-
+    // (7) 设置当前进程 mm / 页表
     mm_count_inc(mm);
     current->mm = mm;
     current->pgdir = PADDR(mm->pgdir);
     lsatp(PADDR(mm->pgdir));
-
+    // (8) 初始化用户态 trapframe
     struct trapframe *tf = current->tf;
     uintptr_t sstatus = tf->status;
     memset(tf, 0, sizeof(struct trapframe));

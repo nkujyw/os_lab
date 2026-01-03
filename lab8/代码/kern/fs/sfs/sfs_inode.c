@@ -599,21 +599,24 @@ sfs_io_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, void *buf, off_t offset
 		 * (3) If end position isn't aligned with the last block, Rd/Wr some content from begin to the (endpos % SFS_BLKSIZE) of the last block
 		 *       NOTICE: useful function: sfs_bmap_load_nolock, sfs_buf_op	
 		*/
+
     while (pos < endpos)
-    {
+    {   
+        // 计算当前文件偏移所在的逻辑块号和块内偏移
         blkno = pos / SFS_BLKSIZE;
         blkoff = pos % SFS_BLKSIZE;
+        // 本次最多可访问到当前块结尾
         size = SFS_BLKSIZE - blkoff;
         if (size > endpos - pos)
         {
             size = endpos - pos;
         }
-
+        // 将逻辑块号映射为实际磁盘块号
         if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, &ino)) != 0)
         {
             goto out;
         }
-
+        // 整块访问使用块级接口，非对齐访问使用缓冲区接口
         if (size == SFS_BLKSIZE)
         {
             ret = sfs_block_op(sfs, data, ino, 1);
@@ -626,6 +629,7 @@ sfs_io_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, void *buf, off_t offset
         {
             goto out;
         }
+        // 推进文件位置、用户缓冲区指针及已完成长度
         pos += size;
         data += size;
         alen += size;
